@@ -167,6 +167,12 @@ class QwenClient:
             yield event
 
     async def stream_chat_once(self, token: str, chat_id: str, payload: dict) -> AsyncIterator[dict]:
+        try:
+            payload_dump = json.dumps(payload, ensure_ascii=False, indent=2)
+        except Exception:
+            payload_dump = str(payload)
+        log.info("[Qwen请求] POST %s/api/v2/chat/completions?chat_id=%s\n%s", BASE_URL, chat_id, payload_dump)
+
         # 使用全局连接池，复用连接（对齐 ds2api）
         async with self._http_client.stream(
             "POST",
@@ -175,11 +181,18 @@ class QwenClient:
             json=payload,
         ) as resp:
             if resp.status_code != 200:
-                yield {"status": resp.status_code, "body": await resp.aread()}
+                body = await resp.aread()
+                try:
+                    body_text = body.decode("utf-8", errors="replace")
+                except Exception:
+                    body_text = str(body)
+                log.warning("[Qwen响应] HTTP %s chat_id=%s body=%r", resp.status_code, chat_id, body_text)
+                yield {"status": resp.status_code, "body": body}
                 return
             # 使用 aiter_text() 保证 UTF-8 正确处理和 SSE 格式完整
             async for chunk in resp.aiter_text():
                 if chunk:
+                    log.info("[Qwen流式] chat_id=%s chunk=%r", chat_id, chunk)
                     yield {"chunk": chunk}
             yield {"status": "streamed"}
 
