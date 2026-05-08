@@ -239,8 +239,38 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str
         '- <｜tool｜>...  <-- NEVER USE (native tool markers)',
         '- <｜System｜>, <｜User｜>, <｜Assistant｜>  <-- NEVER USE (role markers)',
         "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
+        "",
+        "Available tools and parameters:",
         "=== END TOOL INSTRUCTIONS ===",
     ]
+    if len(names) <= 20:
+        tool_lines = []
+        for tool in tools:
+            name = to_qwen_name(tool.get("name", ""))
+            desc = (tool.get("description", "") or "")[:80]
+            schema = tool.get("parameters") or tool.get("input_schema") or {}
+            sig = compact_schema(schema)
+            line = f"- {name}"
+            if desc:
+                line += f": {desc}"
+            if sig and sig != "{}":
+                line += f"\n  Params: {sig}"
+            tool_lines.append(line)
+        insert_at = lines.index("=== END TOOL INSTRUCTIONS ===")
+        lines[insert_at:insert_at] = tool_lines
+    else:
+        tool_lines = []
+        for tool in tools[:20]:
+            name = to_qwen_name(tool.get("name", ""))
+            schema = tool.get("parameters") or tool.get("input_schema") or {}
+            sig = compact_schema(schema)
+            line = f"- {name}"
+            if sig and sig != "{}":
+                line += f"\n  Params: {sig}"
+            tool_lines.append(line)
+        tool_lines.append(f"- ... and {len(names) - 20} more tools")
+        insert_at = lines.index("=== END TOOL INSTRUCTIONS ===")
+        lines[insert_at:insert_at] = tool_lines
     return obfuscate_bare_names("\n".join(lines))
 
 
