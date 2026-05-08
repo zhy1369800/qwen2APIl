@@ -151,6 +151,11 @@ class OpenAIStreamTranslator:
         if tool_calls:
             self.tool_calls_emitted = True
 
+    def drain_chunks(self) -> list[str]:
+        chunks = list(self.pending_chunks)
+        self.pending_chunks.clear()
+        return chunks
+
     def finalize(self, finish_reason: str) -> list[str]:
         final_finish_reason = finish_reason
         buffered_text = "".join(self.buffered_toolish_fragments)
@@ -175,7 +180,7 @@ class OpenAIStreamTranslator:
         elif buffered_text and not self.tool_calls_emitted:
             self._emit_content_chunk(buffered_text)
 
-        chunks = list(self.pending_chunks)
+        chunks = self.drain_chunks()
         chunks.append(
             f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': final_finish_reason}]}, ensure_ascii=False)}\n\n"
         )
