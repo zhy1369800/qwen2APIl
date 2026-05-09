@@ -495,6 +495,7 @@ async def collect_completion_run(
         files=getattr(request, "upstream_files", None),
         fixed_account=getattr(request, "bound_account", None),
         existing_chat_id=getattr(request, "upstream_chat_id", None),
+        thinking_enabled=getattr(request, "thinking_enabled", True),
     ):
         if item.get("type") == "meta":
             chat_id = item.get("chat_id")

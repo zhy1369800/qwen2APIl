@@ -23,6 +23,7 @@ class StandardRequest:
     tool_names: list[str] = field(default_factory=list)
     tool_name_registry: dict[str, str] = field(default_factory=dict)
     tool_enabled: bool = False
+    thinking_enabled: bool = True
     attachments: list[NormalizedAttachment] = field(default_factory=list)
     uploaded_file_ids: list[str] = field(default_factory=list)
     upstream_files: list[dict[str, Any]] = field(default_factory=list)

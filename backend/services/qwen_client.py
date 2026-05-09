@@ -156,8 +156,23 @@ class QwenClient:
             if acc is not None:
                 self.account_pool.release(acc)
 
-    def _build_payload(self, chat_id: str, model: str, content: str, has_custom_tools: bool = False, files: list[dict] | None = None) -> dict:
-        return build_chat_payload(chat_id, model, content, has_custom_tools, files=files)
+    def _build_payload(
+        self,
+        chat_id: str,
+        model: str,
+        content: str,
+        has_custom_tools: bool = False,
+        files: list[dict] | None = None,
+        thinking_enabled: bool = True,
+    ) -> dict:
+        return build_chat_payload(
+            chat_id,
+            model,
+            content,
+            has_custom_tools,
+            files=files,
+            thinking_enabled=thinking_enabled,
+        )
 
     def parse_sse_chunk(self, chunk: str) -> list[dict]:
         return parse_sse_chunk(chunk)
