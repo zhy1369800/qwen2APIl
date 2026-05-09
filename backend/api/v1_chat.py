@@ -162,6 +162,11 @@ async def chat_completions(request: Request):
 
                     async def on_delta(evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
                         translator.on_delta(evt, text_chunk, tool_calls)
+                        phase = evt.get("phase")
+                        status = evt.get("status")
+                        if (phase in ("think", "thinking_summary") and status != "finished") or tool_calls:
+                            await _flush_translator_chunks(translator)
+                            return
                         if incremental_flush_enabled:
                             await _flush_translator_chunks(translator)
 
