@@ -78,6 +78,7 @@ class OpenAIStreamTranslator:
             "tool does not exists",
             "function.name:",
             "##tool_call##",
+            "##tool_call",
             "##end_call##",
             '"tool_calls"',
             '"function":',
@@ -175,7 +176,7 @@ class OpenAIStreamTranslator:
                 buffered_probe = self.prefix_probe_buffer
                 self.prefix_probe_buffer = ""
                 self.prefix_probe_decided = True
-                if buffered_probe.startswith(TOOL_CALL_PREFIX_PROBE):
+                if buffered_probe.lstrip().startswith(TOOL_CALL_PREFIX_PROBE):
                     self.buffered_toolish_fragments.append(buffered_probe)
                     return
                 text_chunk = buffered_probe
