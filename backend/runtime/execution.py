@@ -406,6 +406,7 @@ async def collect_completion_run(
     raw_events: list[dict[str, Any]] = []
     metrics = StreamMetrics()
     last_function_call = None
+    last_thinking_summary_text = ""  # Qwen 的 thinking_summary 是全量覆盖，需要 diff 出增量
 
     # 初始化 Tool Sieve 用于实时检测
     tool_sieve = None
@@ -546,6 +547,14 @@ async def collect_completion_run(
 
         if phase in ("think", "thinking_summary"):
             reasoning_content = _extract_reasoning_text(evt)
+            if phase == "thinking_summary" and reasoning_content:
+                # Qwen thinking_summary 每次都发全量文本，需要 diff 出真正的增量
+                if reasoning_content.startswith(last_thinking_summary_text):
+                    incremental = reasoning_content[len(last_thinking_summary_text):]
+                else:
+                    incremental = reasoning_content
+                last_thinking_summary_text = reasoning_content
+                reasoning_content = incremental
             if not reasoning_content and evt.get("status") != "finished":
                 continue
             if reasoning_content:
