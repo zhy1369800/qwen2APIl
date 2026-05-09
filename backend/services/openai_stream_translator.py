@@ -11,6 +11,8 @@ from backend.toolcall.parser import parse_tool_calls_detailed
 STRICT_TOOL_TEXT_PREFIXES = ("{", "[", "`", "<")
 BUFFERED_TOOL_CALLS_ONLY = "buffered_tool_calls_only"
 DIRECTIVE_DRIVEN_TOOL_CALLS = "directive_driven_tool_calls"
+TOOL_CALL_PREFIX_PROBE = "##TOOL_CALL"
+MIN_TOOL_PREFIX_CACHE_CHARS = 12
 
 
 class OpenAIStreamTranslator:
@@ -39,6 +41,9 @@ class OpenAIStreamTranslator:
         self.tool_calls_emitted = False
         self.tool_text_detection_mode = self._resolve_tool_text_detection_mode(client_profile)
         self.tool_call_finalize_mode = self._resolve_tool_call_finalize_mode(client_profile)
+        self.enable_prefix_probe = bool(self.allowed_tool_names)
+        self.prefix_probe_buffer = ""
+        self.prefix_probe_decided = False
 
     @staticmethod
     def _resolve_tool_text_detection_mode(client_profile: str) -> str:
@@ -129,6 +134,17 @@ class OpenAIStreamTranslator:
 
         if text_chunk and evt.get("phase") == "answer":
             self.answer_fragments.append(text_chunk)
+            if self.enable_prefix_probe and not self.prefix_probe_decided:
+                self.prefix_probe_buffer += text_chunk
+                if len(self.prefix_probe_buffer) < MIN_TOOL_PREFIX_CACHE_CHARS:
+                    return
+                buffered_probe = self.prefix_probe_buffer
+                self.prefix_probe_buffer = ""
+                self.prefix_probe_decided = True
+                if buffered_probe.startswith(TOOL_CALL_PREFIX_PROBE):
+                    self.buffered_toolish_fragments.append(buffered_probe)
+                    return
+                text_chunk = buffered_probe
             if self._looks_like_tool_output(text_chunk):
                 self.buffered_toolish_fragments.append(text_chunk)
             elif self.buffered_toolish_fragments:
@@ -158,6 +174,13 @@ class OpenAIStreamTranslator:
 
     def finalize(self, finish_reason: str) -> list[str]:
         final_finish_reason = finish_reason
+        if self.enable_prefix_probe and self.prefix_probe_buffer:
+            if self.prefix_probe_buffer.startswith(TOOL_CALL_PREFIX_PROBE):
+                self.buffered_toolish_fragments.append(self.prefix_probe_buffer)
+            elif not self.tool_calls_emitted:
+                self._emit_content_chunk(self.prefix_probe_buffer)
+            self.prefix_probe_buffer = ""
+            self.prefix_probe_decided = True
         buffered_text = "".join(self.buffered_toolish_fragments)
         if self.build_final_directive is not None and not self.tool_calls_emitted:
             directive = self.build_final_directive("".join(self.answer_fragments))

@@ -80,6 +80,29 @@ def compact_schema(schema: dict[str, Any]) -> str:
     return "{" + ", ".join(parts) + "}"
 
 
+def compact_param_descriptions(schema: dict[str, Any], desc_max_len: int = 60) -> str:
+    """压缩参数说明为紧凑串。
+
+    返回示例：`file_path: 目标文件路径; content: 要写入的完整文本内容`
+    """
+    if not isinstance(schema, dict):
+        return ""
+    props = schema.get("properties")
+    if not isinstance(props, dict) or not props:
+        return ""
+    parts = []
+    for name, spec in props.items():
+        if not isinstance(spec, dict):
+            continue
+        desc = (spec.get("description", "") or "").strip()
+        if not desc:
+            continue
+        if desc_max_len > 0 and len(desc) > desc_max_len:
+            desc = desc[:desc_max_len] + "…"
+        parts.append(f"{name}: {desc}")
+    return "; ".join(parts)
+
+
 def render_tool_signature(tool: dict[str, Any], desc_max_len: int = 50) -> str:
     """渲染单个工具为紧凑一行："- name: desc\n  Params: {...}"。"""
     name = tool.get("name", "")
@@ -93,4 +116,7 @@ def render_tool_signature(tool: dict[str, Any], desc_max_len: int = 50) -> str:
         line += f": {desc}"
     if sig and sig != "{}":
         line += f"\n  Params: {sig}"
+    detail = compact_param_descriptions(schema)
+    if detail:
+        line += f"\n  Param details: {detail}"
     return line

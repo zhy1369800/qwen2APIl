@@ -12,7 +12,7 @@ from backend.services.client_profiles import (
     sanitize_openclaw_user_text,
 )
 from backend.services.refusal_cleaner import clean_refusal_messages
-from backend.services.schema_compressor import compact_schema
+from backend.services.schema_compressor import compact_param_descriptions, compact_schema
 from backend.services.tool_few_shot import pick_few_shot_tools, render_few_shot_turn, tool_summary_for_log
 from backend.services.tool_name_obfuscation import obfuscate_bare_names, to_qwen_name
 from backend.services.topic_isolation import detect_topic_change
@@ -250,11 +250,14 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str
             desc = (tool.get("description", "") or "")[:80]
             schema = tool.get("parameters") or tool.get("input_schema") or {}
             sig = compact_schema(schema)
+            detail = compact_param_descriptions(schema)
             line = f"- {name}"
             if desc:
                 line += f": {desc}"
             if sig and sig != "{}":
                 line += f"\n  Params: {sig}"
+            if detail:
+                line += f"\n  Param details: {detail}"
             tool_lines.append(line)
         insert_at = lines.index("=== END TOOL INSTRUCTIONS ===")
         lines[insert_at:insert_at] = tool_lines
@@ -264,9 +267,12 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str
             name = to_qwen_name(tool.get("name", ""))
             schema = tool.get("parameters") or tool.get("input_schema") or {}
             sig = compact_schema(schema)
+            detail = compact_param_descriptions(schema)
             line = f"- {name}"
             if sig and sig != "{}":
                 line += f"\n  Params: {sig}"
+            if detail:
+                line += f"\n  Param details: {detail}"
             tool_lines.append(line)
         tool_lines.append(f"- ... and {len(names) - 20} more tools")
         insert_at = lines.index("=== END TOOL INSTRUCTIONS ===")
