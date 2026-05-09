@@ -12,6 +12,7 @@ from backend.core.config import settings
 from backend.core.request_logging import update_request_context
 from backend.runtime.stream_metrics import StreamMetrics
 from backend.services import tool_parser
+from backend.services.tool_name_obfuscation import from_qwen_name
 from backend.toolcall.normalize import normalize_tool_name
 from backend.toolcall.stream_state import StreamingToolCallState
 
@@ -617,7 +618,7 @@ async def collect_completion_run(
                         rescued_call = {
                             "type": "tool_use",
                             "id": f"toolu_{uuid.uuid4().hex[:8]}",
-                            "name": last_function_call["name"],
+                            "name": from_qwen_name(last_function_call["name"]),
                             "input": args
                         }
                         native_tool_calls.append(rescued_call)
