@@ -605,8 +605,6 @@ async def collect_completion_run(
                             )
                             return _finalize_result(reason="tool_sieve_detected")
 
-            if on_delta is not None:
-                await on_delta(evt, content, None)
             if request.tools:
                 answer_text = "".join(answer_fragments)
                 if len(answer_fragments) % 3 == 0 or "does not exist" in content.lower():
@@ -632,6 +630,11 @@ async def collect_completion_run(
                     blocked_tool_names = extract_blocked_tool_names(answer_text.strip(), request.tool_names)
                     if blocked_tool_names:
                         return _finalize_result(reason=f"blocked_tool_name:{blocked_tool_names[0]}")
+
+            if on_delta is not None:
+                await on_delta(evt, content, None)
+
+            if request.tools:
                 if "##TOOL_CALL##" in answer_text or "<tool_call>" in answer_text:
                     directive = parse_tool_directive_once(
                         request,
