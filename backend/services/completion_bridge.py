@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -75,14 +76,39 @@ async def run_retryable_completion_bridge(
     if not getattr(standard_request, 'full_prompt', None):
         standard_request.full_prompt = prompt
 
+    _bridge_log = logging.getLogger("qwen2api.bridge")
+
     for attempt_index in range(max_attempts):
-        execution = await collect_completion_run(
-            client,
-            standard_request,
-            current_prompt,
-            capture_events=capture_events,
-            on_delta=on_delta,
-        )
+        try:
+            execution = await collect_completion_run(
+                client,
+                standard_request,
+                current_prompt,
+                capture_events=capture_events,
+                on_delta=on_delta,
+            )
+        except Exception as upstream_exc:
+            exc_str = str(upstream_exc).lower()
+            is_retryable = any(k in exc_str for k in (
+                "not exist", "bad_request", "invalid input", "chat_id",
+                "stream transport", "no available accounts",
+            ))
+            is_auth_error = any(k in exc_str for k in ("unauthorized", "forbidden", "401", "403"))
+            if is_retryable and not is_auth_error and attempt_index < max_attempts - 1:
+                _bridge_log.warning(
+                    "[重试] 上游异常 第%s/%s次 原因=%s",
+                    attempt_index + 1, max_attempts, str(upstream_exc)[:120],
+                )
+                # 若预热池中有坏的 chat_id，立即清空该账号池，防止下次再取到同一个坏 id
+                pool = getattr(client, 'chat_id_pool', None)
+                bound_acc = getattr(standard_request, 'bound_account', None)
+                if pool is not None and bound_acc is not None:
+                    await pool.flush_account(getattr(bound_acc, 'email', ''))
+                await asyncio.sleep(0.3)
+                await _reacquire_bound_account_if_needed(client=client, standard_request=standard_request)
+                continue
+            raise
+
         retry = evaluate_retry_directive(
             request=standard_request,
             current_prompt=current_prompt,
