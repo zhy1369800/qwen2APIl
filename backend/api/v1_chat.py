@@ -133,6 +133,7 @@ async def chat_completions(request: Request):
             async def generate():
                 async with app.state.session_locks.hold(session_key):
                     queue: asyncio.Queue[str | None] = asyncio.Queue()
+                    incremental_flush_enabled = not standard_request.tool_enabled
 
                     log.info(
                         "[OAI-Stream] generate entered stream=%s tools=%s session_key=%s incremental_flush=%s",
@@ -161,7 +162,8 @@ async def chat_completions(request: Request):
 
                     async def on_delta(evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
                         translator.on_delta(evt, text_chunk, tool_calls)
-                        await _flush_translator_chunks(translator)
+                        if incremental_flush_enabled:
+                            await _flush_translator_chunks(translator)
 
                     async def produce() -> None:
                         log.info(
