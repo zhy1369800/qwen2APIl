@@ -7,17 +7,16 @@ from backend.toolcall.normalize import build_tool_name_registry
 
 
 def _resolve_thinking_enabled(req_data: dict) -> bool:
+    # 显式禁止
     reasoning_effort = str(req_data.get("reasoning_effort", "") or "").strip().lower()
     if reasoning_effort == "none":
         return False
 
     reasoning = req_data.get("reasoning")
     if isinstance(reasoning, dict):
-        enabled = reasoning.get("enabled")
-        if enabled is False:
+        if reasoning.get("enabled") is False:
             return False
-        effort = str(reasoning.get("effort", "") or "").strip().lower()
-        if effort == "none":
+        if str(reasoning.get("effort", "") or "").strip().lower() == "none":
             return False
 
     thinking = req_data.get("thinking")
@@ -26,12 +25,25 @@ def _resolve_thinking_enabled(req_data: dict) -> bool:
     if isinstance(thinking, dict) and thinking.get("enabled") is False:
         return False
 
-    include_reasoning = req_data.get("include_reasoning")
-    if include_reasoning is False:
+    if req_data.get("include_reasoning") is False:
         return False
 
-    return True
+    # 显式开启
+    if reasoning_effort in ("low", "medium", "high"):
+        return True
+    if isinstance(reasoning, dict) and (reasoning.get("enabled") is True or reasoning.get("effort")):
+        return True
+    if thinking is True or (isinstance(thinking, dict) and thinking.get("enabled") is True):
+        return True
+    if req_data.get("include_reasoning") is True:
+        return True
 
+    # 默认：根据模型名推断，如果是推理模型则默认开启，否则默认关闭
+    model_name = str(req_data.get("model", "")).lower()
+    if any(k in model_name for k in ("think", "reason", "r1", "o1", "o3")):
+        return True
+
+    return False
 
 def build_chat_standard_request(req_data: dict, *, default_model: str, surface: str, client_profile: str = "openclaw_openai") -> StandardRequest:
     requested_model = req_data.get("model", default_model)
