@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import json
 import logging
 import time
+import traceback
 import uuid
 from typing import Any, Awaitable, Callable
 from backend.adapter.standard_request import StandardRequest
@@ -133,6 +134,14 @@ async def chat_completions(request: Request):
                 async with app.state.session_locks.hold(session_key):
                     queue: asyncio.Queue[str | None] = asyncio.Queue()
 
+                    log.info(
+                        "[OAI-Stream] generate entered stream=%s tools=%s session_key=%s incremental_flush=%s",
+                        standard_request.stream,
+                        standard_request.tool_names,
+                        session_key,
+                        incremental_flush_enabled,
+                    )
+
                     async def _flush_translator_chunks(translator: OpenAIStreamTranslator) -> None:
                         for chunk in translator.drain_chunks():
                             await queue.put(chunk)
@@ -155,6 +164,13 @@ async def chat_completions(request: Request):
                         await _flush_translator_chunks(translator)
 
                     async def produce() -> None:
+                        log.info(
+                            "[OAI-Stream] produce started model=%s tools=%s prompt_len=%s thinking_enabled=%s",
+                            standard_request.resolved_model,
+                            standard_request.tool_names,
+                            len(prompt),
+                            getattr(standard_request, "thinking_enabled", True),
+                        )
                         try:
                             result = await run_retryable_completion_bridge(
                                 client=client,
@@ -170,6 +186,13 @@ async def chat_completions(request: Request):
                                 on_delta=on_delta,
                             )
                             execution = result.execution
+                            log.info(
+                                "[OAI-Stream] produce completed finish_reason=%s tool_calls=%s answer_len=%s reasoning_len=%s",
+                                execution.state.finish_reason,
+                                len(execution.state.tool_calls),
+                                len(execution.state.answer_text),
+                                len(execution.state.reasoning_text),
+                            )
                             directive = result.directive or build_tool_directive(standard_request, execution.state)
                             assistant_message = build_openai_assistant_history_message(
                                 execution=execution,
@@ -187,12 +210,18 @@ async def chat_completions(request: Request):
                             for chunk in translator.finalize(final_finish_reason):
                                 await queue.put(chunk)
                         except HTTPException as he:
+                            log.warning("[OAI-Stream] produce HTTPException detail=%r", he.detail)
                             await clear_invalidated_session_chat(app=app, request=standard_request)
                             await queue.put(f"data: {json.dumps({'error': he.detail})}\n\n")
+                        except asyncio.CancelledError:
+                            log.warning("[OAI-Stream] produce cancelled by client disconnect or server shutdown")
+                            raise
                         except Exception as e:
+                            log.error("[OAI-Stream] produce exception: %s\n%s", e, traceback.format_exc())
                             await clear_invalidated_session_chat(app=app, request=standard_request)
                             await queue.put(f"data: {json.dumps({'error': str(e)})}\n\n")
                         finally:
+                            log.info("[OAI-Stream] produce finalized")
                             await queue.put(None)
 
                     producer = asyncio.create_task(produce())
@@ -200,9 +229,11 @@ async def chat_completions(request: Request):
                         while True:
                             chunk = await queue.get()
                             if chunk is None:
+                                log.info("[OAI-Stream] queue completed")
                                 break
                             yield chunk
                     finally:
+                        log.info("[OAI-Stream] awaiting producer shutdown")
                         await producer
 
             return StreamingResponse(
