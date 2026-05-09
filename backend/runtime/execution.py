@@ -404,6 +404,7 @@ async def collect_completion_run(
     first_event_marked = False
     raw_events: list[dict[str, Any]] = []
     metrics = StreamMetrics()
+    last_function_call = None
 
     # 初始化 Tool Sieve 用于实时检测
     tool_sieve = None
@@ -539,6 +540,9 @@ async def collect_completion_run(
         phase = evt.get("phase", "")
         content = evt.get("content", "")
 
+        if evt.get("function_call"):
+            last_function_call = evt.get("function_call")
+
         if phase in ("think", "thinking_summary"):
             reasoning_content = _extract_reasoning_text(evt)
             if not reasoning_content and evt.get("status") != "finished":
@@ -606,6 +610,25 @@ async def collect_completion_run(
             if request.tools:
                 answer_text = "".join(answer_fragments)
                 if len(answer_fragments) % 3 == 0 or "does not exist" in content.lower():
+                    if "does not exist" in content.lower() and last_function_call and last_function_call.get("name"):
+                        import uuid
+                        try:
+                            args = json.loads(last_function_call.get("arguments", "{}"))
+                        except Exception:
+                            args = {"raw_args": last_function_call.get("arguments", "")}
+                        rescued_call = {
+                            "type": "tool_use",
+                            "id": f"toolu_{uuid.uuid4().hex[:8]}",
+                            "name": last_function_call["name"],
+                            "input": args
+                        }
+                        native_tool_calls.append(rescued_call)
+                        log.info(
+                            "[Collect] ✓ 成功在抛尸现场捡漏，拦截借尸还魂工具: %s",
+                            rescued_call["name"],
+                        )
+                        return _finalize_result(reason="native_tool_rescued")
+
                     blocked_tool_names = extract_blocked_tool_names(answer_text.strip(), request.tool_names)
                     if blocked_tool_names:
                         return _finalize_result(reason=f"blocked_tool_name:{blocked_tool_names[0]}")

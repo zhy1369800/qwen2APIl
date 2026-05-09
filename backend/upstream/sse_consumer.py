@@ -36,6 +36,7 @@ def parse_sse_chunk(chunk: str) -> list[dict]:
                     "content": content,
                     "status": delta.get("status", ""),
                     "extra": delta.get("extra", {}),
+                    "function_call": delta.get("function_call"),
                 }
             )
     return parsed
