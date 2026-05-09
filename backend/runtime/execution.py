@@ -307,12 +307,14 @@ def has_invalid_textual_tool_contract(answer_text: str) -> bool:
 
 
 def _extract_reasoning_text(evt: dict[str, Any]) -> str:
-    delta = evt.get("delta", {}) if isinstance(evt, dict) else {}
-    content = delta.get("content", "")
+    if not isinstance(evt, dict):
+        return ""
+
+    content = evt.get("content", "")
     if isinstance(content, str) and content:
         return content
 
-    extra = delta.get("extra", {})
+    extra = evt.get("extra", {})
     if not isinstance(extra, dict):
         return ""
 
