@@ -46,17 +46,7 @@ class OpenAIStreamTranslator:
         self.enable_prefix_probe = bool(self.allowed_tool_names)
         self.prefix_probe_buffer = ""
         self.prefix_probe_decided = False
-
-    @staticmethod
-    def _resolve_tool_text_detection_mode(client_profile: str) -> str:
-        if client_profile == OPENCLAW_OPENAI_PROFILE:
-            return "strict_prefix"
-        return "accept_any_tool_syntax"
-
-    @staticmethod
-    def _resolve_tool_call_finalize_mode(client_profile: str) -> str:
-        if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
-            return BUFFERED_TOOL_CALLS_ONLY
+        self._suspicion_suffix = ""  # 暂存可能是 ##TOOL_CALL## 前缀的尾部片段
 
     @staticmethod
     def _resolve_tool_text_detection_mode(client_profile: str) -> str:
@@ -69,6 +59,15 @@ class OpenAIStreamTranslator:
         if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
             return BUFFERED_TOOL_CALLS_ONLY
         return DIRECTIVE_DRIVEN_TOOL_CALLS
+
+    def _split_suspicion_suffix(self, text: str) -> tuple[str, str]:
+        """把文本末尾可能是 ##TOOL_CALL## 前缀的部分切出来暂存，返回 (safe, suspicion)。"""
+        full_marker = TOOL_CALL_PREFIX_PROBE + "##"  # "##TOOL_CALL##"
+        for i in range(min(len(full_marker), len(text)), 0, -1):
+            suffix = text[-i:]
+            if suffix[0] == "#" and full_marker.startswith(suffix):
+                return text[:-i], suffix
+        return text, ""
 
     def _looks_like_tool_output(self, text_chunk: str) -> bool:
         if not text_chunk:
@@ -185,7 +184,20 @@ class OpenAIStreamTranslator:
             elif self.buffered_toolish_fragments:
                 self.buffered_toolish_fragments.append(text_chunk)
             else:
-                self._emit_content_chunk(text_chunk)
+                # 发给客户端前，检查尾部是否是 ##TOOL_CALL## 的开始，避免跨 chunk 被漏发
+                if self._suspicion_suffix:
+                    text_chunk = self._suspicion_suffix + text_chunk
+                    self._suspicion_suffix = ""
+                if self._looks_like_tool_output(text_chunk):
+                    self.buffered_toolish_fragments.append(text_chunk)
+                else:
+                    safe_part, suspicion = self._split_suspicion_suffix(text_chunk)
+                    if suspicion:
+                        self._suspicion_suffix = suspicion
+                        if safe_part:
+                            self._emit_content_chunk(safe_part)
+                    else:
+                        self._emit_content_chunk(text_chunk)
             return
 
         if tool_calls:
