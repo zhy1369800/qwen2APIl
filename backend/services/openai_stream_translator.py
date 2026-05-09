@@ -230,7 +230,12 @@ class OpenAIStreamTranslator:
                 self._emit_content_chunk(self.prefix_probe_buffer)
             self.prefix_probe_buffer = ""
             self.prefix_probe_decided = True
+        # 把尾部可疑暂存也加入缓冲，避免遗漏
+        if self._suspicion_suffix:
+            self.buffered_toolish_fragments.append(self._suspicion_suffix)
+            self._suspicion_suffix = ""
         buffered_text = "".join(self.buffered_toolish_fragments)
+        has_tool_marker = "##tool_call" in buffered_text.lower() or "<tool_call>" in buffered_text.lower()
         if self.build_final_directive is not None and not self.tool_calls_emitted:
             directive = self.build_final_directive("".join(self.answer_fragments))
             if self._should_finalize_tool_calls(directive):
@@ -247,9 +252,10 @@ class OpenAIStreamTranslator:
                 if tool_calls:
                     self.emit_tool_calls(tool_calls)
                     final_finish_reason = "tool_calls"
-            elif buffered_text:
+            elif buffered_text and not has_tool_marker and finish_reason != "tool_calls":
+                # 只有确认不含工具调用标记时才以普通文本发出
                 self._emit_content_chunk(buffered_text)
-        elif buffered_text and not self.tool_calls_emitted:
+        elif buffered_text and not self.tool_calls_emitted and not has_tool_marker and finish_reason != "tool_calls":
             self._emit_content_chunk(buffered_text)
 
         chunks = self.drain_chunks()

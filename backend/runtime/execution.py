@@ -567,6 +567,19 @@ async def collect_completion_run(
                 await on_delta(evt, reasoning_content, None)
             continue
 
+        async def _ensure_reasoning_closed() -> None:
+            """在工具调用路径上提前关闭推理链，避免客户端思维链 UI 不停转。"""
+            if on_delta is not None:
+                synthetic_close = {
+                    "type": "delta",
+                    "phase": "thinking_summary",
+                    "status": "finished",
+                    "content": "",
+                    "extra": {},
+                }
+                await on_delta(synthetic_close, "", None)
+
+
         if phase == "answer" and content:
             answer_fragments.append(content)
 
@@ -615,6 +628,7 @@ async def collect_completion_run(
                             )
                             if on_delta is not None:
                                 await on_delta(evt, None, detected_calls)
+                            await _ensure_reasoning_closed()
                             return _finalize_result(reason="tool_sieve_detected")
 
             if request.tools:
@@ -639,6 +653,7 @@ async def collect_completion_run(
                         )
                         if on_delta is not None:
                             await on_delta(evt, None, [rescued_call])
+                        await _ensure_reasoning_closed()
                         return _finalize_result(reason="native_tool_rescued")
 
                     blocked_tool_names = extract_blocked_tool_names(answer_text.strip(), request.tool_names)
@@ -650,6 +665,8 @@ async def collect_completion_run(
 
             if request.tools:
                 if "##TOOL_CALL##" in answer_text or "<tool_call>" in answer_text:
+                    # 一旦检测到工具调用标记，立即关闭推理链，不等完整 JSON 解析完成
+                    await _ensure_reasoning_closed()
                     directive = parse_tool_directive_once(
                         request,
                         RuntimeAttemptState(answer_text=answer_text, reasoning_text="".join(reasoning_fragments)),
