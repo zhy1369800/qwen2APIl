@@ -39,6 +39,8 @@ class OpenAIStreamTranslator:
         self.buffered_toolish_fragments: list[str] = []
         self.pending_content_chunks: list[str] = []
         self.tool_calls_emitted = False
+        self.reasoning_started = False
+        self.reasoning_closed = False
         self.tool_text_detection_mode = self._resolve_tool_text_detection_mode(client_profile)
         self.tool_call_finalize_mode = self._resolve_tool_call_finalize_mode(client_profile)
         self.enable_prefix_probe = bool(self.allowed_tool_names)
@@ -111,10 +113,20 @@ class OpenAIStreamTranslator:
     def _emit_reasoning_chunk(self, text_chunk: str) -> None:
         """把 Qwen 的思考内容以 DeepSeek R1 风格 reasoning_content 发出去，
         让网页端/客户端能显示推理过程。"""
+        self.reasoning_started = True
         chunk = (
             f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'reasoning_content': text_chunk}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
         )
         self.pending_chunks.append(chunk)
+
+    def _close_reasoning_if_needed(self) -> None:
+        if not self.reasoning_started or self.reasoning_closed:
+            return
+        chunk = (
+            f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'reasoning_content': ''}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
+        )
+        self.pending_chunks.append(chunk)
+        self.reasoning_closed = True
 
     def _discard_pending_content_chunks(self) -> None:
         if not self.pending_content_chunks:
@@ -126,13 +138,21 @@ class OpenAIStreamTranslator:
     def on_delta(self, evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
         self._ensure_role_chunk()
 
-        if text_chunk and evt.get("phase") in ("think", "thinking_summary"):
+        phase = evt.get("phase")
+        status = evt.get("status")
+
+        if phase in ("think", "thinking_summary") and status == "finished":
+            self._close_reasoning_if_needed()
+            return
+
+        if text_chunk and phase in ("think", "thinking_summary"):
             # 把思考内容作为 reasoning_content 发给客户端（DeepSeek R1 风格）
             # 网页端 TestPage 会单独显示这段"推理过程"
             self._emit_reasoning_chunk(text_chunk)
             return
 
-        if text_chunk and evt.get("phase") == "answer":
+        if text_chunk and phase == "answer":
+            self._close_reasoning_if_needed()
             self.answer_fragments.append(text_chunk)
             if self.enable_prefix_probe and not self.prefix_probe_decided:
                 self.prefix_probe_buffer += text_chunk
@@ -158,6 +178,7 @@ class OpenAIStreamTranslator:
 
     def emit_tool_calls(self, tool_calls: list[dict[str, Any]]) -> None:
         self._ensure_role_chunk()
+        self._close_reasoning_if_needed()
         for tool_call in tool_calls:
             idx = self.emitted_tool_index
             self.emitted_tool_index += 1
@@ -174,6 +195,7 @@ class OpenAIStreamTranslator:
 
     def finalize(self, finish_reason: str) -> list[str]:
         final_finish_reason = finish_reason
+        self._close_reasoning_if_needed()
         if self.enable_prefix_probe and self.prefix_probe_buffer:
             if self.prefix_probe_buffer.startswith(TOOL_CALL_PREFIX_PROBE):
                 self.buffered_toolish_fragments.append(self.prefix_probe_buffer)
