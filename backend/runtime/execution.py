@@ -306,6 +306,28 @@ def has_invalid_textual_tool_contract(answer_text: str) -> bool:
     return False
 
 
+def _extract_reasoning_text(evt: dict[str, Any]) -> str:
+    delta = evt.get("delta", {}) if isinstance(evt, dict) else {}
+    content = delta.get("content", "")
+    if isinstance(content, str) and content:
+        return content
+
+    extra = delta.get("extra", {})
+    if not isinstance(extra, dict):
+        return ""
+
+    summary_thought = extra.get("summary_thought", {})
+    if not isinstance(summary_thought, dict):
+        return ""
+
+    summary_content = summary_thought.get("content", [])
+    if isinstance(summary_content, list):
+        return "".join(part for part in summary_content if isinstance(part, str))
+    if isinstance(summary_content, str):
+        return summary_content
+    return ""
+
+
 def should_retry_textual_tool_contract(answer_text: str) -> bool:
     if not answer_text:
         return False
@@ -515,14 +537,17 @@ async def collect_completion_run(
         phase = evt.get("phase", "")
         content = evt.get("content", "")
 
-        if phase in ("think", "thinking_summary") and content:
-            reasoning_fragments.append(content)
+        if phase in ("think", "thinking_summary"):
+            reasoning_content = _extract_reasoning_text(evt)
+            if not reasoning_content:
+                continue
+            reasoning_fragments.append(reasoning_content)
             emitted_visible_output = True
             if not first_event_marked:
                 metrics.mark("first_event", float(len(raw_events)))
                 first_event_marked = True
             if on_delta is not None:
-                await on_delta(evt, content, None)
+                await on_delta(evt, reasoning_content, None)
             continue
 
         if phase == "answer" and content:
