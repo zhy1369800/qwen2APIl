@@ -604,6 +604,8 @@ async def collect_completion_run(
                                 "[Collect] ✓ Tool Sieve 实时检测到工具调用: tools=%s",
                                 [c.get("name") for c in detected_calls],
                             )
+                            if on_delta is not None:
+                                await on_delta(evt, None, detected_calls)
                             return _finalize_result(reason="tool_sieve_detected")
 
             if request.tools:
@@ -626,6 +628,8 @@ async def collect_completion_run(
                             "[Collect] ✓ 成功在抛尸现场捡漏，拦截借尸还魂工具: %s",
                             rescued_call["name"],
                         )
+                        if on_delta is not None:
+                            await on_delta(evt, None, [rescued_call])
                         return _finalize_result(reason="native_tool_rescued")
 
                     blocked_tool_names = extract_blocked_tool_names(answer_text.strip(), request.tool_names)
