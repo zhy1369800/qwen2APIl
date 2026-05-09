@@ -57,6 +57,17 @@ class OpenAIStreamTranslator:
     def _resolve_tool_call_finalize_mode(client_profile: str) -> str:
         if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
             return BUFFERED_TOOL_CALLS_ONLY
+
+    @staticmethod
+    def _resolve_tool_text_detection_mode(client_profile: str) -> str:
+        if client_profile == OPENCLAW_OPENAI_PROFILE:
+            return "strict_prefix"
+        return "accept_any_tool_syntax"
+
+    @staticmethod
+    def _resolve_tool_call_finalize_mode(client_profile: str) -> str:
+        if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
+            return BUFFERED_TOOL_CALLS_ONLY
         return DIRECTIVE_DRIVEN_TOOL_CALLS
 
     def _looks_like_tool_output(self, text_chunk: str) -> bool:
@@ -65,7 +76,6 @@ class OpenAIStreamTranslator:
         lowered = text_chunk.lower()
         common_markers = (
             "tool does not exists",
-            "</think>",
             "function.name:",
             "##tool_call##",
             "##end_call##",
@@ -126,6 +136,10 @@ class OpenAIStreamTranslator:
             f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'reasoning_content': ''}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
         )
         self.pending_chunks.append(chunk)
+        chunk_content = (
+            f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'content': ''}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
+        )
+        self.pending_chunks.append(chunk_content)
         self.reasoning_closed = True
 
     def _discard_pending_content_chunks(self) -> None:

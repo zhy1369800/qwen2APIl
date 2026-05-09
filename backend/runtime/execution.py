@@ -541,13 +541,14 @@ async def collect_completion_run(
 
         if phase in ("think", "thinking_summary"):
             reasoning_content = _extract_reasoning_text(evt)
-            if not reasoning_content:
+            if not reasoning_content and evt.get("status") != "finished":
                 continue
-            reasoning_fragments.append(reasoning_content)
-            emitted_visible_output = True
-            if not first_event_marked:
-                metrics.mark("first_event", float(len(raw_events)))
-                first_event_marked = True
+            if reasoning_content:
+                reasoning_fragments.append(reasoning_content)
+                emitted_visible_output = True
+                if not first_event_marked:
+                    metrics.mark("first_event", float(len(raw_events)))
+                    first_event_marked = True
             if on_delta is not None:
                 await on_delta(evt, reasoning_content, None)
             continue
