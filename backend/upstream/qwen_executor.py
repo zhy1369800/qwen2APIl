@@ -277,6 +277,13 @@ class QwenExecutor:
                         acc.activation_pending = True
                     if self.auth_resolver is not None:
                         asyncio.create_task(self.auth_resolver.auto_heal_account(acc))
+                elif "is not exist" in err_msg:
+                    # 如果只是预热的 chat_id 失效了，不要拉黑账号，直接重试即可
+                    # 同时清空该账号的预热池，防止同一批次的其他 chat_id 也全部失效导致重试次数耗尽
+                    log.warning(f"[上游] 会话不存在(可能预热池过期) 账号={acc.email}，清空预热池并继续重试")
+                    if self.chat_id_pool is not None:
+                        asyncio.create_task(self.chat_id_pool.flush_account(acc.email))
+                    pass # 不加入 exclude
                 else:
                     exclude.add(acc.email)
 
