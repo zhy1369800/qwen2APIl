@@ -410,6 +410,8 @@ async def collect_completion_run(
 
     # Native function_call streaming state
     native_fn_emitted = False
+    native_fn_ignored = False
+    native_fn_ignored_name = None
     last_fn_args_len = 0
     native_fn_id = None
 
@@ -419,7 +421,7 @@ async def collect_completion_run(
         tool_sieve = tool_parser.ToolSieve(request.tool_names)
         log.info("[收集完成] 工具过滤器已启用，工具列表: %s", request.tool_names)
 
-    def _finalize_result(*, reason: str | None = None) -> RuntimeExecutionResult:
+    def _finalize_result(*, reason: str | None = None, explicit_blocked_tool: str | None = None) -> RuntimeExecutionResult:
         answer_text = "".join(answer_fragments)
         reasoning_text = "".join(reasoning_fragments)
         if native_tool_calls and not answer_text:
@@ -478,6 +480,22 @@ async def collect_completion_run(
                     len(answer_text),
                 )
 
+        # 提取无效工具名称并阻止发送
+        extracted_blocked = extract_blocked_tool_names(answer_text.strip(), request.tool_names)
+        if explicit_blocked_tool and explicit_blocked_tool not in extracted_blocked:
+            extracted_blocked.append(explicit_blocked_tool)
+            
+        if request.tool_names:
+            for t in detected_tool_calls:
+                if t["name"] not in request.tool_names and t["name"] not in extracted_blocked:
+                    extracted_blocked.append(t["name"])
+                    
+        # Filter detected_tool_calls to only contain valid tools
+        if request.tool_names:
+            detected_tool_calls = [t for t in detected_tool_calls if t["name"] in request.tool_names]
+            if not detected_tool_calls:
+                final_finish_reason = "stop"
+
         # 检查空输出
         if not detected_tool_calls and not answer_text.strip() and not reasoning_text.strip():
             log.warning(
@@ -512,7 +530,7 @@ async def collect_completion_run(
             answer_text=answer_text,
             reasoning_text=reasoning_text,
             tool_calls=detected_tool_calls,
-            blocked_tool_names=extract_blocked_tool_names(answer_text.strip(), request.tool_names),
+            blocked_tool_names=extracted_blocked,
             finish_reason=final_finish_reason,
             raw_events=raw_events,
             emitted_visible_output=emitted_visible_output,
@@ -568,12 +586,18 @@ async def collect_completion_run(
                 name = fc.get("name")
                 args_str = fc.get("arguments", "")
                 
-                if name and not native_fn_emitted:
-                    native_fn_emitted = True
-                    import uuid
-                    native_fn_id = f"toolu_{uuid.uuid4().hex[:8]}"
-                    await on_delta(evt, None, [{"type": "tool_call_stream_start", "id": native_fn_id, "name": from_qwen_name(name)}])
-                    await _ensure_reasoning_closed()
+                if name and not native_fn_emitted and not native_fn_ignored:
+                    qwen_name = from_qwen_name(name)
+                    if request.tool_names and qwen_name not in request.tool_names:
+                        native_fn_ignored = True
+                        native_fn_ignored_name = qwen_name
+                        log.warning(f"[Collect] 忽略上游原生的未注册工具调用: {qwen_name}")
+                    else:
+                        native_fn_emitted = True
+                        import uuid
+                        native_fn_id = f"toolu_{uuid.uuid4().hex[:8]}"
+                        await on_delta(evt, None, [{"type": "tool_call_stream_start", "id": native_fn_id, "name": qwen_name}])
+                        await _ensure_reasoning_closed()
                 
                 if native_fn_emitted and len(args_str) > last_fn_args_len:
                     args_delta = args_str[last_fn_args_len:]
@@ -660,8 +684,12 @@ async def collect_completion_run(
                                 [c.get("name") for c in detected_calls],
                             )
                             # 如果没有流式输出过，才把整个块发给客户端；否则只触发执行结束
+                            # 且必须过滤掉未注册的非法工具（如 code_interpreter）
+                            valid_calls_to_emit = [c for c in detected_calls if not request.tool_names or c["name"] in request.tool_names]
+                            
                             if on_delta is not None and not getattr(tool_sieve, "stream_tool_id", None):
-                                await on_delta(evt, None, detected_calls)
+                                if valid_calls_to_emit:
+                                    await on_delta(evt, None, valid_calls_to_emit)
                             await _ensure_reasoning_closed()
                             return _finalize_result(reason="tool_sieve_detected")
 
@@ -734,7 +762,12 @@ async def collect_completion_run(
         }
         native_tool_calls.append(completed_call)
 
-    return _finalize_result(reason="stream_end")
+    explicit_blocked = None
+    if getattr(request, "tools", None) and getattr(request, "tool_names", None):
+        if native_fn_ignored and native_fn_ignored_name:
+            explicit_blocked = native_fn_ignored_name
+
+    return _finalize_result(reason="stream_end", explicit_blocked_tool=explicit_blocked)
 
 
 def parse_tool_directive_once(request: StandardRequest, state: RuntimeAttemptState) -> RuntimeToolDirective:

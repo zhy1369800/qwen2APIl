@@ -313,9 +313,9 @@ def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
         name = from_qwen_name(name)
         normalized_name = normalize_tool_name(name, tool_registry.values())
         cased_name = _normalize_tool_name_case(normalized_name, tool_names)
-        if cased_name not in tool_names:
-            _log_warning(f"[ToolParse] 工具名不匹配，回退为普通文本: name={name!r}, normalized={normalized_name!r}, cased={cased_name!r}, tools={tool_names}")
-            return [{"type": "text", "text": answer}], "end_turn"
+        if tool_names and cased_name not in tool_names:
+            _log_warning(f"[ToolParse] 工具名不匹配，返回未注册工具调用: name={name!r}, normalized={normalized_name!r}, cased={cased_name!r}, tools={tool_names}")
+            # We do NOT return as text here anymore. We return it as a tool_use block so execution.py can explicitly block and retry it.
         coerced_input = _coerce_tool_input(cased_name, input_data, tools)
         # 智能引号修复 + Edit/StrReplace 的 old_string fuzzy 修复
         coerced_input = fix_tool_call_arguments(cased_name, coerced_input)
@@ -460,19 +460,29 @@ class ToolSieve:
                 import re
                 m_name = re.search(r'"name"\s*:\s*"([^"]+)"', self.capture)
                 if m_name:
-                    self.stream_tool_name = m_name.group(1)
+                    raw_name = m_name.group(1)
+                    from backend.services.tool_name_obfuscation import from_qwen_name
+                    from backend.toolcall.normalize import normalize_tool_name
+                    self.stream_tool_name = normalize_tool_name(from_qwen_name(raw_name), self.tool_names)
+                    
                     m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
                     if m_input:
                         self.stream_active = True
                         self.stream_brace_depth = 0
                         self.stream_completed = False
-                        import uuid
-                        self.stream_tool_id = f"toolu_{uuid.uuid4().hex[:8]}"
                         
-                        events.append({
-                            "type": "tool_calls_start",
-                            "calls": [{"type": "tool_call_stream_start", "id": self.stream_tool_id, "name": self.stream_tool_name}]
-                        })
+                        if self.tool_names and self.stream_tool_name not in self.tool_names:
+                            self.stream_ignored = True
+                        else:
+                            self.stream_ignored = False
+                            
+                        if not getattr(self, "stream_ignored", False):
+                            import uuid
+                            self.stream_tool_id = f"toolu_{uuid.uuid4().hex[:8]}"
+                            events.append({
+                                "type": "tool_calls_start",
+                                "calls": [{"type": "tool_call_stream_start", "id": self.stream_tool_id, "name": self.stream_tool_name}]
+                            })
                         
                         args_start_str = m_input.group(1)
                         clean_args = ""
@@ -488,7 +498,7 @@ class ToolSieve:
                                     self.stream_completed = True
                                     break
                                     
-                        if clean_args:
+                        if clean_args and not getattr(self, "stream_ignored", False):
                             events.append({
                                 "type": "tool_calls_chunk",
                                 "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
@@ -507,7 +517,7 @@ class ToolSieve:
                             self.stream_completed = True
                             break
                             
-                if clean_args:
+                if clean_args and not getattr(self, "stream_ignored", False):
                     events.append({
                         "type": "tool_calls_chunk",
                         "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
