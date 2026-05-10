@@ -650,7 +650,6 @@ async def collect_completion_run(
                 continue
             if reasoning_content:
                 reasoning_fragments.append(reasoning_content)
-                emitted_visible_output = True
                 if not first_event_marked:
                     metrics.mark("first_event", float(len(raw_events)))
                     first_event_marked = True
