@@ -452,22 +452,90 @@ class ToolSieve:
 
         # 如果正在捕获工具调用
         if self.capturing:
-            self.capture += self.pending
+            self.capture += chunk
             self.pending = ""
+
+            # --- START INCREMENTAL STREAMING LOGIC ---
+            if not getattr(self, "stream_active", False):
+                import re
+                m_name = re.search(r'"name"\s*:\s*"([^"]+)"', self.capture)
+                if m_name:
+                    self.stream_tool_name = m_name.group(1)
+                    m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
+                    if m_input:
+                        self.stream_active = True
+                        self.stream_brace_depth = 0
+                        self.stream_completed = False
+                        import uuid
+                        self.stream_tool_id = f"toolu_{uuid.uuid4().hex[:8]}"
+                        
+                        events.append({
+                            "type": "tool_calls_start",
+                            "calls": [{"type": "tool_call_stream_start", "id": self.stream_tool_id, "name": self.stream_tool_name}]
+                        })
+                        
+                        args_start_str = m_input.group(1)
+                        clean_args = ""
+                        for ch in args_start_str:
+                            if self.stream_brace_depth == 0 and ch not in "{[\"":
+                                continue
+                            clean_args += ch
+                            if ch in "{[":
+                                self.stream_brace_depth += 1
+                            elif ch in "}]":
+                                self.stream_brace_depth -= 1
+                                if self.stream_brace_depth == 0:
+                                    self.stream_completed = True
+                                    break
+                                    
+                        if clean_args:
+                            events.append({
+                                "type": "tool_calls_chunk",
+                                "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
+                            })
+            elif not getattr(self, "stream_completed", False):
+                clean_args = ""
+                for ch in chunk:
+                    if self.stream_brace_depth == 0 and ch not in "{[\"":
+                        continue
+                    clean_args += ch
+                    if ch in "{[":
+                        self.stream_brace_depth += 1
+                    elif ch in "}]":
+                        self.stream_brace_depth -= 1
+                        if self.stream_brace_depth == 0:
+                            self.stream_completed = True
+                            break
+                            
+                if clean_args:
+                    events.append({
+                        "type": "tool_calls_chunk",
+                        "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
+                    })
+            # --- END INCREMENTAL STREAMING LOGIC ---
 
             # 尝试解析
             prefix, calls, suffix, ready = self._consume_tool_capture()
 
             if ready and calls:
                 # 解析成功
-                if prefix:
+                if prefix and not getattr(self, "stream_active", False):
                     events.append({"type": "content", "text": prefix})
 
+                # If we streamed, we should NOT emit full `tool_calls` again to avoid duplicate!
+                # Wait, `execution.py` expects `tool_calls` to trigger execution!
+                # We can just emit it, but `execution.py` should execute it without translator emitting it again.
+                # Actually, `execution.py` will catch `type: tool_calls` and run the tool.
+                # Translator handles `type: tool_calls` by doing `self.emit_tool_calls(tool_calls)`, which would emit a duplicate tool block.
+                # So we can set a flag `emitted_stream = True` to tell `execution.py` or `translator` to skip emitting the full block.
+                # Let's just add `is_full_duplicate: True` to the final `tool_calls` event.
+                
                 self.pending_tool_calls = calls
                 self.tool_calls_detected = True
                 self.pending = suffix
                 self.capture = ""
                 self.capturing = False
+                self.stream_active = False
 
             return events
 
@@ -549,6 +617,18 @@ class ToolSieve:
             return "", text
 
         return text[:-10], text[-10:]
+
+    def _clean_args_chunk(self, chunk: str) -> str:
+        """清理流式参数块中的结尾标记"""
+        if not chunk:
+            return ""
+        if "##END" in chunk:
+            chunk = chunk[:chunk.find("##END")]
+        if "END_CALL" in chunk:
+            chunk = chunk[:chunk.find("END_CALL")]
+        if "</tool" in chunk:
+            chunk = chunk[:chunk.find("</tool")]
+        return chunk
 
     def flush(self) -> list[dict]:
         """刷新剩余内容"""

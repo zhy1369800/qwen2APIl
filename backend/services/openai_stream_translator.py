@@ -201,7 +201,30 @@ class OpenAIStreamTranslator:
             return
 
         if tool_calls:
-            self.emit_tool_calls(tool_calls)
+            if tool_calls[0].get("type") == "tool_call_stream_start":
+                self.emit_tool_call_start(tool_calls[0]["id"], tool_calls[0]["name"])
+            elif tool_calls[0].get("type") == "tool_call_stream_chunk":
+                self.emit_tool_call_chunk(tool_calls[0]["arguments"])
+            else:
+                self.emit_tool_calls(tool_calls)
+
+    def emit_tool_call_start(self, tool_id: str, tool_name: str) -> None:
+        self._ensure_role_chunk()
+        self._close_reasoning_if_needed()
+        idx = self.emitted_tool_index
+        self.emitted_tool_index += 1
+        self.pending_chunks.append(
+            f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'tool_calls': [{'index': idx, 'id': tool_id, 'type': 'function', 'function': {'name': tool_name, 'arguments': ''}}]}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
+        )
+        self.tool_calls_emitted = True
+
+    def emit_tool_call_chunk(self, arguments_chunk: str) -> None:
+        if self.emitted_tool_index == 0:
+            return
+        idx = self.emitted_tool_index - 1
+        self.pending_chunks.append(
+            f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'tool_calls': [{'index': idx, 'function': {'arguments': arguments_chunk}}]}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
+        )
 
     def emit_tool_calls(self, tool_calls: list[dict[str, Any]]) -> None:
         self._ensure_role_chunk()

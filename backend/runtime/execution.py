@@ -610,14 +610,23 @@ async def collect_completion_run(
             if tool_sieve:
                 sieve_events = tool_sieve.process_chunk(content)
                 for sieve_evt in sieve_events:
-                    if sieve_evt.get("type") == "tool_calls":
+                    if sieve_evt.get("type") == "tool_calls_start":
+                        calls = sieve_evt.get("calls", [])
+                        if on_delta is not None and calls:
+                            await on_delta(evt, None, calls)
+                        await _ensure_reasoning_closed()
+                    elif sieve_evt.get("type") == "tool_calls_chunk":
+                        calls = sieve_evt.get("calls", [])
+                        if on_delta is not None and calls:
+                            await on_delta(evt, None, calls)
+                    elif sieve_evt.get("type") == "tool_calls":
                         # 检测到工具调用！
                         calls = sieve_evt.get("calls", [])
                         if calls:
                             import uuid
                             detected_calls = [{
                                 "type": "tool_use",
-                                "id": f"toolu_{uuid.uuid4().hex[:8]}",
+                                "id": getattr(tool_sieve, "stream_tool_id", f"toolu_{uuid.uuid4().hex[:8]}"),
                                 "name": call["name"],
                                 "input": call["input"]
                             } for call in calls]
@@ -626,7 +635,8 @@ async def collect_completion_run(
                                 "[Collect] ✓ Tool Sieve 实时检测到工具调用: tools=%s",
                                 [c.get("name") for c in detected_calls],
                             )
-                            if on_delta is not None:
+                            # 如果没有流式输出过，才把整个块发给客户端；否则只触发执行结束
+                            if on_delta is not None and not getattr(tool_sieve, "stream_tool_id", None):
                                 await on_delta(evt, None, detected_calls)
                             await _ensure_reasoning_closed()
                             return _finalize_result(reason="tool_sieve_detected")
