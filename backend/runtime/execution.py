@@ -408,6 +408,11 @@ async def collect_completion_run(
     last_function_call = None
     last_thinking_summary_text = ""  # Qwen 的 thinking_summary 是全量覆盖，需要 diff 出增量
 
+    # Native function_call streaming state
+    native_fn_emitted = False
+    last_fn_args_len = 0
+    native_fn_id = None
+
     # 初始化 Tool Sieve 用于实时检测
     tool_sieve = None
     if request.tools:
@@ -542,8 +547,39 @@ async def collect_completion_run(
         phase = evt.get("phase", "")
         content = evt.get("content", "")
 
+        async def _ensure_reasoning_closed() -> None:
+            """在工具调用路径上提前关闭推理链，避免客户端思维链 UI 不停转。"""
+            if on_delta is not None:
+                synthetic_close = {
+                    "type": "delta",
+                    "phase": "thinking_summary",
+                    "status": "finished",
+                    "content": "",
+                    "extra": {},
+                }
+                await on_delta(synthetic_close, "", None)
+
         if evt.get("function_call"):
             last_function_call = evt.get("function_call")
+            
+            # --- START NATIVE FUNCTION_CALL STREAMING ---
+            if on_delta is not None and not getattr(request, "persistent_session", False):
+                fc = last_function_call
+                name = fc.get("name")
+                args_str = fc.get("arguments", "")
+                
+                if name and not native_fn_emitted:
+                    native_fn_emitted = True
+                    import uuid
+                    native_fn_id = f"toolu_{uuid.uuid4().hex[:8]}"
+                    await on_delta(evt, None, [{"type": "tool_call_stream_start", "id": native_fn_id, "name": from_qwen_name(name)}])
+                    await _ensure_reasoning_closed()
+                
+                if native_fn_emitted and len(args_str) > last_fn_args_len:
+                    args_delta = args_str[last_fn_args_len:]
+                    last_fn_args_len = len(args_str)
+                    await on_delta(evt, None, [{"type": "tool_call_stream_chunk", "arguments": args_delta}])
+            # --- END NATIVE FUNCTION_CALL STREAMING ---
 
         if phase in ("think", "thinking_summary"):
             reasoning_content = _extract_reasoning_text(evt)
@@ -566,18 +602,6 @@ async def collect_completion_run(
             if on_delta is not None:
                 await on_delta(evt, reasoning_content, None)
             continue
-
-        async def _ensure_reasoning_closed() -> None:
-            """在工具调用路径上提前关闭推理链，避免客户端思维链 UI 不停转。"""
-            if on_delta is not None:
-                synthetic_close = {
-                    "type": "delta",
-                    "phase": "thinking_summary",
-                    "status": "finished",
-                    "content": "",
-                    "extra": {},
-                }
-                await on_delta(synthetic_close, "", None)
 
 
         if phase == "answer" and content:
@@ -696,6 +720,19 @@ async def collect_completion_run(
                 if on_delta is not None:
                     await on_delta(evt, None, completed_calls)
                 return _finalize_result(reason="native_tool_use")
+
+    if native_fn_emitted and last_function_call:
+        try:
+            args = json.loads(last_function_call.get("arguments", "{}"))
+        except Exception:
+            args = {"raw_args": last_function_call.get("arguments", "")}
+        completed_call = {
+            "type": "tool_use",
+            "id": native_fn_id,
+            "name": from_qwen_name(last_function_call.get("name", "unknown")),
+            "input": args
+        }
+        native_tool_calls.append(completed_call)
 
     return _finalize_result(reason="stream_end")
 
