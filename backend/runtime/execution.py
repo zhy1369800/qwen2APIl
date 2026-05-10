@@ -594,7 +594,7 @@ async def collect_completion_run(
                         log.warning(f"[Collect] 检测到未注册工具 {qwen_name!r}，立刻 return 触发重试，不等流结束")
                         # 立刻关推理 UI 并触发重试，避免等待 code_interpreter 跑完
                         await _ensure_reasoning_closed()
-                        return _finalize_result(reason=f"ignored_native_fn:{qwen_name}", explicit_blocked_tool=qwen_name)
+                        # return _finalize_result(reason=f"ignored_native_fn:{qwen_name}", explicit_blocked_tool=qwen_name)
                     else:
                         native_fn_emitted = True
                         import uuid
@@ -650,6 +650,7 @@ async def collect_completion_run(
                 continue
             if reasoning_content:
                 reasoning_fragments.append(reasoning_content)
+                emitted_visible_output = True
                 if not first_event_marked:
                     metrics.mark("first_event", float(len(raw_events)))
                     first_event_marked = True
