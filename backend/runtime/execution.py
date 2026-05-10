@@ -581,7 +581,7 @@ async def collect_completion_run(
             last_function_call = evt.get("function_call")
             
             # --- START NATIVE FUNCTION_CALL STREAMING ---
-            if on_delta is not None and not getattr(request, "persistent_session", False):
+            if on_delta is not None:
                 fc = last_function_call
                 name = fc.get("name")
                 args_str = fc.get("arguments", "")
@@ -603,6 +603,34 @@ async def collect_completion_run(
                     args_delta = args_str[last_fn_args_len:]
                     last_fn_args_len = len(args_str)
                     await on_delta(evt, None, [{"type": "tool_call_stream_chunk", "arguments": args_delta}])
+                    
+                    # 关键：检测 JSON 是否闭合，立刻 return 触发 finalize("tool_calls")
+                    # 避免等待 100s 的上游流结束后才给客户端发 finish_reason
+                    if args_str.strip():
+                        depth = 0
+                        max_depth = 0
+                        for ch in args_str:
+                            if ch in "{[":
+                                depth += 1
+                                if depth > max_depth:
+                                    max_depth = depth
+                            elif ch in "}]":
+                                depth -= 1
+                        if max_depth > 0 and depth <= 0:
+                            try:
+                                import json as _json
+                                args_obj = _json.loads(args_str)
+                            except Exception:
+                                args_obj = {"raw_args": args_str}
+                            completed_call = {
+                                "type": "tool_use",
+                                "id": native_fn_id,
+                                "name": qwen_name,
+                                "input": args_obj,
+                            }
+                            native_tool_calls.append(completed_call)
+                            log.info("[Collect] ✓ 原生 function_call 参数闭合，提前 return: tool=%s", qwen_name)
+                            return _finalize_result(reason="native_fn_args_complete")
             # --- END NATIVE FUNCTION_CALL STREAMING ---
 
         if phase in ("think", "thinking_summary"):
@@ -667,6 +695,26 @@ async def collect_completion_run(
                         calls = sieve_evt.get("calls", [])
                         if on_delta is not None and calls:
                             await on_delta(evt, None, calls)
+                        # 如果 JSON 已经闭合（stream_completed），立刻尝试 return
+                        if getattr(tool_sieve, "stream_completed", False):
+                            # 尝试从 capture 中解析完整工具调用，立刻结束流
+                            flush_events = tool_sieve.flush()
+                            for fevt in flush_events:
+                                if fevt.get("type") == "tool_calls":
+                                    flush_calls = fevt.get("calls", [])
+                                    if flush_calls:
+                                        import uuid
+                                        detected_calls = [{
+                                            "type": "tool_use",
+                                            "id": getattr(tool_sieve, "stream_tool_id", f"toolu_{uuid.uuid4().hex[:8]}"),
+                                            "name": call["name"],
+                                            "input": call["input"]
+                                        } for call in flush_calls]
+                                        valid = [c for c in detected_calls if not request.tool_names or c["name"] in request.tool_names]
+                                        if valid:
+                                            native_tool_calls.extend(valid)
+                                            log.info("[Collect] ✓ ToolSieve JSON 闭合，提前 return: tools=%s", [c["name"] for c in valid])
+                                            return _finalize_result(reason="tool_sieve_stream_complete")
                     elif sieve_evt.get("type") == "tool_calls":
                         # 检测到工具调用！
                         calls = sieve_evt.get("calls", [])
@@ -749,7 +797,8 @@ async def collect_completion_run(
                     await on_delta(evt, None, completed_calls)
                 return _finalize_result(reason="native_tool_use")
 
-    if native_fn_emitted and last_function_call:
+    # 如果 function_call 的参数没有闭合就到了 stream_end，仍然尝试组装工具调用
+    if native_fn_emitted and last_function_call and not native_tool_calls:
         try:
             args = json.loads(last_function_call.get("arguments", "{}"))
         except Exception:
