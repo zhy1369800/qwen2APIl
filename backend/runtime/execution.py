@@ -591,7 +591,10 @@ async def collect_completion_run(
                     if request.tool_names and qwen_name not in request.tool_names:
                         native_fn_ignored = True
                         native_fn_ignored_name = qwen_name
-                        log.warning(f"[Collect] 忽略上游原生的未注册工具调用: {qwen_name}")
+                        log.warning(f"[Collect] 检测到未注册工具 {qwen_name!r}，立刻 return 触发重试，不等流结束")
+                        # 立刻关推理 UI 并触发重试，避免等待 code_interpreter 跑完
+                        await _ensure_reasoning_closed()
+                        return _finalize_result(reason=f"ignored_native_fn:{qwen_name}", explicit_blocked_tool=qwen_name)
                     else:
                         native_fn_emitted = True
                         import uuid
@@ -1076,13 +1079,22 @@ def evaluate_retry_directive(
     if state.blocked_tool_names and request.tools:
         if not can_retry_after_output:
             return RuntimeRetryDirective(retry=False, next_prompt=current_prompt, reason=None)
-        blocked_name = normalize_tool_name(state.blocked_tool_names[0], request.tool_names)
+        raw_blocked = state.blocked_tool_names[0]
+        blocked_name = normalize_tool_name(raw_blocked, request.tool_names)
+        
+        # 如果 blocked_name 不在注册工具列表里（如 code_interpreter），
+        # 不能让 reminder 告诉模型"去调用 code_interpreter"——那会适得其反。
+        # 改为用第一个已注册工具名来做 reminder，让模型重新选择合法工具。
+        is_unregistered = not request.tool_names or blocked_name not in request.tool_names
+        reminder_tool_name = blocked_name if not is_unregistered else (request.tool_names[0] if request.tool_names else blocked_name)
+        
         return _retry(
             f"blocked_tool_name:{blocked_name}",
             tool_parser.inject_format_reminder(
                 current_prompt,
-                blocked_name,
+                reminder_tool_name,
                 client_profile=getattr(request, "client_profile", CLAUDE_CODE_OPENAI_PROFILE),
+                blocked_tool=blocked_name if is_unregistered else None,
             ),
         )
 

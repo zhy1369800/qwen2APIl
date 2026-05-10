@@ -678,13 +678,21 @@ class ToolSieve:
         return self.tool_calls_detected or bool(self.pending_tool_calls)
 
 
-def inject_format_reminder(prompt: str, tool_name: str, *, client_profile: str = OPENCLAW_OPENAI_PROFILE) -> str:
+def inject_format_reminder(prompt: str, tool_name: str, *, client_profile: str = OPENCLAW_OPENAI_PROFILE, blocked_tool: str | None = None) -> str:
     """Inject a format correction reminder into the prompt before the final 'Assistant:' tag.
     Used when upstream produced the toxic 'Tool X does not exists.' hallucination —
     the reminder teaches the model to emit the text-marker format without that phrase."""
+    # 如果有被屏蔽的幻觉工具（如 code_interpreter），在 reminder 里明确禁止
+    blocked_line = ""
+    if blocked_tool and blocked_tool != tool_name:
+        blocked_line = (
+            f"\u26a0\ufe0f STRICTLY FORBIDDEN: Do NOT use '{blocked_tool}' \u2014 it is NOT available here.\n"
+            f"\u26a0\ufe0f \u4e25\u683c\u7981\u6b62\uff1a\u4e0d\u8981\u4f7f\u7528 '{blocked_tool}'\uff0c\u8be5\u5de5\u5177\u5728\u5f53\u524d\u73af\u5883\u4e0d\u53ef\u7528\u3002\n"
+        )
     if client_profile == CLAUDE_CODE_OPENAI_PROFILE:
         reminder = (
-            "[CORRECTION / 纠正]: Your previous output contained a forbidden hallucinated error phrase.\n"
+            f"{blocked_line}"
+            "[CORRECTION / \u7ea0\u6b63]: Your previous output used a forbidden tool.\n"
             f"要调用 {tool_name}，只输出这个精确格式，不要有其他文本：\n"
             f"To invoke {tool_name}, output ONLY this exact format with NO other text:\n"
             "##TOOL_CALL##\n"
