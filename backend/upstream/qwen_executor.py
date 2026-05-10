@@ -234,58 +234,67 @@ class QwenExecutor:
             if not acc:
                 raise Exception("No available accounts in pool (all busy or rate limited)")
 
-            try:
-                log.info(f"[上游] 账号已获取 账号={acc.email} 模型={model} 第{attempt + 1}次 获取耗时={acquire_elapsed:.3f}s")
-                create_start = time.perf_counter()
-                chat_id = await self.create_chat(acc.token, model)
-                create_elapsed = time.perf_counter() - create_start
-                update_request_context(chat_id=chat_id)
-                log.info(f"[上游] 创建会话 会话={chat_id} 账号={acc.email} 耗时={create_elapsed:.3f}s")
-                yield {"type": "meta", "chat_id": chat_id, "acc": acc}
+            chat_retry_count = 0
+            while chat_retry_count < 2:
+                try:
+                    log.info(f"[上游] 账号已获取 账号={acc.email} 模型={model} 第{attempt + 1}次 获取耗时={acquire_elapsed:.3f}s")
+                    create_start = time.perf_counter()
+                    chat_id = await self.create_chat(acc.token, model)
+                    create_elapsed = time.perf_counter() - create_start
+                    update_request_context(chat_id=chat_id)
+                    log.info(f"[上游] 创建会话 会话={chat_id} 账号={acc.email} 耗时={create_elapsed:.3f}s")
+                    yield {"type": "meta", "chat_id": chat_id, "acc": acc}
 
-                async for evt in self.stream(
-                    acc.token,
-                    chat_id,
-                    model,
-                    content,
-                    has_custom_tools,
-                    files=files,
-                    thinking_enabled=thinking_enabled,
-                ):
-                    yield {"type": "event", "event": evt}
-                return
+                    async for evt in self.stream(
+                        acc.token,
+                        chat_id,
+                        model,
+                        content,
+                        has_custom_tools,
+                        files=files,
+                        thinking_enabled=thinking_enabled,
+                    ):
+                        yield {"type": "event", "event": evt}
+                    return
 
-            except Exception as e:
-                err_msg = str(e).lower()
-                is_timeout = (
-                    "timeout" in err_msg
-                    or "timed out" in err_msg
-                    or "readtimeout" in err_msg
-                    or type(e).__name__ in ("ReadTimeout", "TimeoutError", "TimeoutException")
-                )
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    
+                    # 针对 chat is not exist 的内部重试逻辑
+                    if "is not exist" in err_msg:
+                        log.warning(f"[上游] 会话不存在(可能预热池过期) 账号={acc.email}，清空预热池并原地重试")
+                        if self.chat_id_pool is not None:
+                            await self.chat_id_pool.flush_account(acc.email)
+                        chat_retry_count += 1
+                        if chat_retry_count < 2:
+                            continue
+                    
+                    is_timeout = (
+                        "timeout" in err_msg
+                        or "timed out" in err_msg
+                        or "readtimeout" in err_msg
+                        or type(e).__name__ in ("ReadTimeout", "TimeoutError", "TimeoutException")
+                    )
 
-                if is_timeout:
-                    log.warning(f"[上游] 超时 第{attempt + 1}/{settings.MAX_RETRIES}次 账号={acc.email} 错误={e}")
-                    exclude.add(acc.email)
-                elif "429" in err_msg or "rate limit" in err_msg or "too many" in err_msg:
-                    self.account_pool.mark_rate_limited(acc)
-                    exclude.add(acc.email)
-                elif "unauthorized" in err_msg or "401" in err_msg or "403" in err_msg:
-                    self.account_pool.mark_invalid(acc)
-                    exclude.add(acc.email)
-                    if "activation" in err_msg or "pending" in err_msg:
-                        acc.activation_pending = True
-                    if self.auth_resolver is not None:
-                        asyncio.create_task(self.auth_resolver.auto_heal_account(acc))
-                elif "is not exist" in err_msg:
-                    # 如果只是预热的 chat_id 失效了，不要拉黑账号，直接重试即可
-                    # 同时清空该账号的预热池，防止同一批次的其他 chat_id 也全部失效导致重试次数耗尽
-                    log.warning(f"[上游] 会话不存在(可能预热池过期) 账号={acc.email}，清空预热池并继续重试")
-                    if self.chat_id_pool is not None:
-                        asyncio.create_task(self.chat_id_pool.flush_account(acc.email))
-                    pass # 不加入 exclude
-                else:
-                    exclude.add(acc.email)
+                    if is_timeout:
+                        log.warning(f"[上游] 超时 第{attempt + 1}/{settings.MAX_RETRIES}次 账号={acc.email} 错误={e}")
+                        exclude.add(acc.email)
+                    elif "429" in err_msg or "rate limit" in err_msg or "too many" in err_msg:
+                        self.account_pool.mark_rate_limited(acc)
+                        exclude.add(acc.email)
+                    elif "unauthorized" in err_msg or "401" in err_msg or "403" in err_msg:
+                        self.account_pool.mark_invalid(acc)
+                        exclude.add(acc.email)
+                        if "activation" in err_msg or "pending" in err_msg:
+                            acc.activation_pending = True
+                        if self.auth_resolver is not None:
+                            asyncio.create_task(self.auth_resolver.auto_heal_account(acc))
+                    else:
+                        # 兜底：如果是其他错误（或超过内部重试次数的 is not exist），加入 exclude
+                        exclude.add(acc.email)
+                    
+                    # 跳出内部循环，释放账号并进入下一次大重试
+                    break
 
                 self.account_pool.release(acc)
                 log.warning(
