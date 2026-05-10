@@ -145,6 +145,13 @@ class QwenExecutor:
                 if "chunk" in chunk_result:
                     buffer += chunk_result["chunk"]
                     total_output_chars += len(chunk_result["chunk"])
+                    
+                    # 检测是否返回了错误 JSON（如 "chat not exist"）而不是 SSE 流
+                    if not first_event_logged and buffer.lstrip().startswith("{"):
+                        buf_clean = buffer.replace(" ", "").replace("\n", "").replace('"', '')
+                        if "success:false" in buf_clean or "code:Bad_Request" in buf_clean:
+                            raise Exception(f"Upstream returned JSON error instead of SSE: {buffer}")
+
                     while "\n\n" in buffer:
                         msg, buffer = buffer.split("\n\n", 1)
                         for evt in parse_sse_chunk(msg):
