@@ -219,6 +219,7 @@ class OpenAIStreamTranslator:
         self.tool_calls_emitted = True
 
     def emit_tool_call_chunk(self, arguments_chunk: str) -> None:
+        self._close_reasoning_if_needed()
         if self.emitted_tool_index == 0:
             return
         idx = self.emitted_tool_index - 1

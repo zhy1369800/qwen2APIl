@@ -457,7 +457,6 @@ class ToolSieve:
 
             # --- START INCREMENTAL STREAMING LOGIC ---
             if not getattr(self, "stream_active", False):
-                import re
                 m_name = re.search(r'"name"\s*:\s*"([^"]+)"', self.capture)
                 if m_name:
                     raw_name = m_name.group(1)
@@ -465,25 +464,25 @@ class ToolSieve:
                     from backend.toolcall.normalize import normalize_tool_name
                     self.stream_tool_name = normalize_tool_name(from_qwen_name(raw_name), self.tool_names)
                     
+                    self.stream_active = True
+                    self.stream_brace_depth = 0
+                    self.stream_completed = False
+                    
+                    if self.tool_names and self.stream_tool_name not in self.tool_names:
+                        self.stream_ignored = True
+                    else:
+                        self.stream_ignored = False
+                        
+                    if not getattr(self, "stream_ignored", False):
+                        import uuid
+                        self.stream_tool_id = f"toolu_{uuid.uuid4().hex[:8]}"
+                        events.append({
+                            "type": "tool_calls_start",
+                            "calls": [{"type": "tool_call_stream_start", "id": self.stream_tool_id, "name": self.stream_tool_name}]
+                        })
+                    
                     m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
                     if m_input:
-                        self.stream_active = True
-                        self.stream_brace_depth = 0
-                        self.stream_completed = False
-                        
-                        if self.tool_names and self.stream_tool_name not in self.tool_names:
-                            self.stream_ignored = True
-                        else:
-                            self.stream_ignored = False
-                            
-                        if not getattr(self, "stream_ignored", False):
-                            import uuid
-                            self.stream_tool_id = f"toolu_{uuid.uuid4().hex[:8]}"
-                            events.append({
-                                "type": "tool_calls_start",
-                                "calls": [{"type": "tool_call_stream_start", "id": self.stream_tool_id, "name": self.stream_tool_name}]
-                            })
-                        
                         args_start_str = m_input.group(1)
                         clean_args = ""
                         for ch in args_start_str:
@@ -561,6 +560,7 @@ class ToolSieve:
             self.capture = self.pending[start:]
             self.pending = ""
             self.capturing = True
+            events.append({"type": "tool_detected"})
         else:
             # 没找到，输出安全部分
             safe, hold = self._split_safe_content(self.pending)

@@ -743,6 +743,8 @@ async def collect_completion_run(
                                     await on_delta(evt, None, valid_calls_to_emit)
                             await _ensure_reasoning_closed()
                             return _finalize_result(reason="tool_sieve_detected")
+                    elif sieve_evt.get("type") == "tool_detected":
+                        await _ensure_reasoning_closed()
 
             if request.tools:
                 answer_text = "".join(answer_fragments)
