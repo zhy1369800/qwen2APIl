@@ -57,6 +57,44 @@ def _build_standard_request(req_data: dict, *, client_profile: str) -> StandardR
     return standard_request
 
 
+def _extract_sources_from_raw_events(raw_events: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    if not isinstance(raw_events, list):
+        return []
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for evt in raw_events:
+        if not isinstance(evt, dict):
+            continue
+        if evt.get("phase") != "web_search":
+            continue
+        extra = evt.get("extra")
+        if not isinstance(extra, dict):
+            continue
+        candidates: list[Any] = [extra.get("web_search_info")]
+        tool_result = extra.get("tool_result")
+        if isinstance(tool_result, dict):
+            candidates.append(tool_result.get("web_search_info"))
+            candidates.append(tool_result.get("docs"))
+        for candidate in candidates:
+            if not isinstance(candidate, list):
+                continue
+            for item in candidate:
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url") or "").strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                merged.append(
+                    {
+                        "url": url,
+                        "title": str(item.get("title") or "").strip(),
+                        "snippet": str(item.get("snippet") or "").strip(),
+                    }
+                )
+    return merged[:20]
+
+
 @router.post("/chat/completions")
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
@@ -302,14 +340,21 @@ async def chat_completions(request: Request):
                     assistant_message=assistant_message,
                 )
 
-                return JSONResponse(build_openai_completion_payload(
+                payload = build_openai_completion_payload(
                     completion_id=completion_id,
                     created=created,
                     model_name=model_name,
                     prompt=result.prompt,
                     execution=execution,
                     standard_request=standard_request,
-                ))
+                )
+                sources = _extract_sources_from_raw_events(getattr(execution.state, "raw_events", None))
+                if sources:
+                    try:
+                        payload["choices"][0]["message"]["metadata"] = {"sources": sources}
+                    except Exception:
+                        pass
+                return JSONResponse(payload)
         except Exception as e:
             await clear_invalidated_session_chat(app=app, request=standard_request)
             raise HTTPException(status_code=500, detail=str(e))

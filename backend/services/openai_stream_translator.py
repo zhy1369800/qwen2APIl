@@ -47,6 +47,8 @@ class OpenAIStreamTranslator:
         self.prefix_probe_buffer = ""
         self.prefix_probe_decided = False
         self._suspicion_suffix = ""  # 暂存可能是 ##TOOL_CALL## 前缀的尾部片段
+        self.web_sources: list[dict[str, str]] = []
+        self.web_sources_emitted = False
 
     @staticmethod
     def _resolve_tool_text_detection_mode(client_profile: str) -> str:
@@ -149,11 +151,77 @@ class OpenAIStreamTranslator:
         self.pending_chunks = [chunk for chunk in self.pending_chunks if id(chunk) not in pending_content_ids]
         self.pending_content_chunks = []
 
+    @staticmethod
+    def _normalize_source_items(raw_items: Any) -> list[dict[str, str]]:
+        out: list[dict[str, str]] = []
+        if not isinstance(raw_items, list):
+            return out
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            title = str(item.get("title") or "").strip()
+            snippet = str(item.get("snippet") or "").strip()
+            if not url:
+                continue
+            out.append({"url": url, "title": title, "snippet": snippet})
+        return out
+
+    @staticmethod
+    def _extract_web_sources(evt: dict[str, Any]) -> list[dict[str, str]]:
+        candidates: list[Any] = []
+        if not isinstance(evt, dict):
+            return []
+        extra = evt.get("extra")
+        if isinstance(extra, dict):
+            candidates.append(extra.get("web_search_info"))
+            tool_result = extra.get("tool_result")
+            if isinstance(tool_result, dict):
+                candidates.append(tool_result.get("web_search_info"))
+                candidates.append(tool_result.get("docs"))
+        for c in candidates:
+            normalized = OpenAIStreamTranslator._normalize_source_items(c)
+            if normalized:
+                return normalized
+        return []
+
+    def _save_web_sources(self, evt: dict[str, Any]) -> None:
+        found = self._extract_web_sources(evt)
+        if not found:
+            return
+        merged: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for src in [*self.web_sources, *found]:
+            url = src.get("url", "")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            merged.append(src)
+        self.web_sources = merged[:20]
+
+    def _emit_web_sources_chunk(self) -> None:
+        if self.web_sources_emitted or not self.web_sources:
+            return
+        payload = {
+            "id": self.completion_id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model_name,
+            "choices": [{"index": 0, "delta": {"metadata": {"sources": self.web_sources}}, "finish_reason": None}],
+        }
+        self.pending_chunks.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
+        self.web_sources_emitted = True
+
     def on_delta(self, evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
         self._ensure_role_chunk()
 
         phase = evt.get("phase")
         status = evt.get("status")
+
+        if phase == "web_search":
+            self._save_web_sources(evt)
+            if status == "finished":
+                self._emit_web_sources_chunk()
 
         if phase in ("think", "thinking_summary") and status == "finished":
             self._close_reasoning_if_needed()
@@ -247,6 +315,7 @@ class OpenAIStreamTranslator:
     def finalize(self, finish_reason: str) -> list[str]:
         final_finish_reason = finish_reason
         self._close_reasoning_if_needed()
+        self._emit_web_sources_chunk()
         if self.enable_prefix_probe and self.prefix_probe_buffer:
             if self.prefix_probe_buffer.startswith(TOOL_CALL_PREFIX_PROBE):
                 self.buffered_toolish_fragments.append(self.prefix_probe_buffer)
