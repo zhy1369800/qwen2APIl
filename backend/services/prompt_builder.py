@@ -145,11 +145,13 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
         '- {"name":"X","input":{...}} without ##TOOL_CALL## markers  <-- NEVER USE',
         "- <｜Tool｜> or <｜tool｜> markers  <-- NEVER USE",
         "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
+                "=== END TOOL INSTRUCTIONS ===",
             ])
         else:
             lines.append("Use the platform's native function calling capability to execute these actions.")
             lines.append("")
             lines.append("Available actions:")
+            lines.append("=== END TOOL INSTRUCTIONS ===")
         if len(names) <= 12:
             for tool in tools:
                 name = to_qwen_name(tool.get("name", ""))
@@ -247,6 +249,7 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
     '- <｜tool｜>...  <-- NEVER USE (native tool markers)',
     '- <｜System｜>, <｜User｜>, <｜Assistant｜>  <-- NEVER USE (role markers)',
     "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
+        "=== END TOOL INSTRUCTIONS ===",
         ])
     else:
         lines.append("Use the platform's native function calling capability to execute these tools.")
@@ -269,7 +272,11 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
             if detail:
                 line += f"\n  Param details: {detail}"
             tool_lines.append(line)
-        insert_at = lines.index("=== END TOOL INSTRUCTIONS ===")
+        if "=== END TOOL INSTRUCTIONS ===" in lines:
+            insert_at = lines.index("=== END TOOL INSTRUCTIONS ===")
+        else:
+            lines.append("=== END TOOL INSTRUCTIONS ===")
+            insert_at = len(lines) - 1
         lines[insert_at:insert_at] = tool_lines
     else:
         tool_lines = []
@@ -285,7 +292,11 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
                 line += f"\n  Param details: {detail}"
             tool_lines.append(line)
         tool_lines.append(f"- ... and {len(names) - 20} more tools")
-        insert_at = lines.index("=== END TOOL INSTRUCTIONS ===")
+        if "=== END TOOL INSTRUCTIONS ===" in lines:
+            insert_at = lines.index("=== END TOOL INSTRUCTIONS ===")
+        else:
+            lines.append("=== END TOOL INSTRUCTIONS ===")
+            insert_at = len(lines) - 1
         lines[insert_at:insert_at] = tool_lines
     return obfuscate_bare_names("\n".join(lines))
 
