@@ -101,6 +101,7 @@ class QwenExecutor:
         has_custom_tools: bool = False,
         files: list[dict] | None = None,
         thinking_enabled: bool = True,
+        auto_search_enabled: bool = False,
     ):
         stream_fn = getattr(self.engine, "stream_chat_once", None) or getattr(self.engine, "fetch_chat", None)
         if stream_fn is None:
@@ -113,6 +114,7 @@ class QwenExecutor:
             has_custom_tools,
             files=files,
             thinking_enabled=thinking_enabled,
+            auto_search_enabled=auto_search_enabled,
         )
         buffer = ""
         started_at = time.perf_counter()
@@ -197,6 +199,7 @@ class QwenExecutor:
         fixed_account=None,
         existing_chat_id: str | None = None,
         thinking_enabled: bool = True,
+        auto_search_enabled: bool = False,
     ):
         exclude = set()
         if fixed_account is not None:
@@ -219,6 +222,7 @@ class QwenExecutor:
                     has_custom_tools,
                     files=files,
                     thinking_enabled=thinking_enabled,
+                    auto_search_enabled=auto_search_enabled,
                 ):
                     yield {"type": "event", "event": evt}
                 return
@@ -253,6 +257,7 @@ class QwenExecutor:
                         has_custom_tools,
                         files=files,
                         thinking_enabled=thinking_enabled,
+                        auto_search_enabled=auto_search_enabled,
                     ):
                         yield {"type": "event", "event": evt}
                     return

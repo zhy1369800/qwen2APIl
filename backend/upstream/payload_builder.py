@@ -21,6 +21,7 @@ def build_chat_payload(
     has_custom_tools: bool = False,
     files: list[dict] | None = None,
     thinking_enabled: bool = True,
+    auto_search_enabled: bool = False,
 ) -> dict:
     ts = int(time.time())
     feature_config = {
@@ -36,6 +37,7 @@ def build_chat_payload(
     if not thinking_enabled:
         feature_config["thinking_enabled"] = False
         feature_config["auto_thinking"] = False
+    feature_config["auto_search"] = bool(auto_search_enabled)
     return {
         "stream": True,
         "version": "2.1",

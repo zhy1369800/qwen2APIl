@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from backend.adapter.standard_request import StandardRequest
+from backend.core.request_logging import update_request_context
 from backend.runtime.execution import build_tool_directive, cleanup_runtime_resources, collect_completion_run, evaluate_retry_directive
 from backend.services.auth_quota import add_used_tokens
 from backend.services.task_session import build_retry_rebase_prompt
@@ -40,6 +41,7 @@ async def run_completion_bridge(
     capture_events: bool = True,
     on_delta: Callable[[dict[str, Any], str | None, list[dict[str, Any]] | None], Awaitable[None]] | None = None,
 ) -> CompletionBridgeResult:
+    update_request_context(auto_search_enabled=bool(getattr(standard_request, "auto_search_enabled", False)))
     execution = await collect_completion_run(
         client,
         standard_request,
@@ -77,6 +79,7 @@ async def run_retryable_completion_bridge(
         standard_request.full_prompt = prompt
 
     _bridge_log = logging.getLogger("qwen2api.bridge")
+    update_request_context(auto_search_enabled=bool(getattr(standard_request, "auto_search_enabled", False)))
 
     for attempt_index in range(max_attempts):
         try:

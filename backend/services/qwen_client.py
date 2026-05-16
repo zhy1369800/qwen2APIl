@@ -6,6 +6,7 @@ from typing import AsyncIterator
 import httpx
 
 from backend.core.account_pool import AccountPool
+from backend.core.request_logging import get_request_context
 from backend.services.auth_resolver import BASE_URL, AuthResolver
 from backend.upstream.payload_builder import build_chat_payload
 from backend.upstream.qwen_executor import QwenExecutor
@@ -164,6 +165,7 @@ class QwenClient:
         has_custom_tools: bool = False,
         files: list[dict] | None = None,
         thinking_enabled: bool = True,
+        auto_search_enabled: bool = False,
     ) -> dict:
         return build_chat_payload(
             chat_id,
@@ -172,6 +174,7 @@ class QwenClient:
             has_custom_tools,
             files=files,
             thinking_enabled=thinking_enabled,
+            auto_search_enabled=auto_search_enabled,
         )
 
     def parse_sse_chunk(self, chunk: str) -> list[dict]:
@@ -186,6 +189,7 @@ class QwenClient:
         has_custom_tools: bool = False,
         files: list[dict] | None = None,
         thinking_enabled: bool = True,
+        auto_search_enabled: bool = False,
     ):
         async for event in self.executor.stream(
             token,
@@ -195,6 +199,7 @@ class QwenClient:
             has_custom_tools,
             files=files,
             thinking_enabled=thinking_enabled,
+            auto_search_enabled=auto_search_enabled,
         ):
             yield event
 
@@ -237,7 +242,10 @@ class QwenClient:
         fixed_account=None,
         existing_chat_id: str | None = None,
         thinking_enabled: bool = True,
+        auto_search_enabled: bool | None = None,
     ):
+        if auto_search_enabled is None:
+            auto_search_enabled = bool(get_request_context().get("auto_search_enabled", False))
         async for item in self.executor.chat_stream_events_with_retry(
             model,
             content,
@@ -246,5 +254,6 @@ class QwenClient:
             fixed_account=fixed_account,
             existing_chat_id=existing_chat_id,
             thinking_enabled=thinking_enabled,
+            auto_search_enabled=auto_search_enabled,
         ):
             yield item
