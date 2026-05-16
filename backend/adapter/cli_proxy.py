@@ -20,19 +20,20 @@ class CLIProxy:
     """
 
     @staticmethod
-    def from_openai(req_data: dict, *, client_profile: str = CLAUDE_CODE_OPENAI_PROFILE) -> StandardRequest:
+    def from_openai(req_data: dict, *, client_profile: str = CLAUDE_CODE_OPENAI_PROFILE, native_fc_enabled: bool = False) -> StandardRequest:
         """
         OpenAI 协议 -> StandardRequest
 
         Args:
             req_data: OpenAI 格式的请求体
             client_profile: 客户端配置文件
+            native_fc_enabled: 是否开启原生函数调用模式
 
         Returns:
             StandardRequest: 统一的标准请求对象
         """
         model_name = req_data.get("model", "gpt-4o")
-        prompt_result = messages_to_prompt(req_data, client_profile=client_profile)
+        prompt_result = messages_to_prompt(req_data, client_profile=client_profile, native_fc_enabled=native_fc_enabled)
 
         tools = prompt_result.tools
         tool_names = [
@@ -56,19 +57,20 @@ class CLIProxy:
         )
 
     @staticmethod
-    def from_anthropic(req_data: dict, *, client_profile: str = CLAUDE_CODE_OPENAI_PROFILE) -> StandardRequest:
+    def from_anthropic(req_data: dict, *, client_profile: str = CLAUDE_CODE_OPENAI_PROFILE, native_fc_enabled: bool = False) -> StandardRequest:
         """
         Anthropic Claude 协议 -> StandardRequest
 
         Args:
             req_data: Claude 格式的请求体
             client_profile: 客户端配置文件
+            native_fc_enabled: 是否开启原生函数调用模式
 
         Returns:
             StandardRequest: 统一的标准请求对象
         """
         model_name = req_data.get("model", "claude-3-5-sonnet")
-        prompt_result = messages_to_prompt(req_data, client_profile=client_profile)
+        prompt_result = messages_to_prompt(req_data, client_profile=client_profile, native_fc_enabled=native_fc_enabled)
 
         tools = prompt_result.tools
         tool_names = [

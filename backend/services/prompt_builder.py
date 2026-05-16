@@ -918,6 +918,10 @@ def messages_to_prompt(req_data: dict, *, client_profile: str = OPENCLAW_OPENAI_
     # Pass: 文件缓存回填
     messages = _resolve_cache_hints(cleaned_messages)
     tools = _normalize_tools(req_data.get("tools", []))
+    # 自动提升：如果外部没传 native_fc_enabled 但有 tools，则自动判定为需要精简提示词
+    if not native_fc_enabled and tools:
+        native_fc_enabled = True
+    
     tool_enabled = bool(tools)
     system_prompt = ""
     sys_field = req_data.get("system", "")

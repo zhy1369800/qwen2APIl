@@ -126,7 +126,8 @@ class _AnthropicStreamState:
 
 def _build_standard_request(req_data: dict) -> StandardRequest:
     """使用 CLIProxy 进行协议转换"""
-    standard_request = CLIProxy.from_anthropic(req_data, client_profile=CLAUDE_CODE_OPENAI_PROFILE)
+    native_fc_enabled = bool(req_data.get("tools"))
+    standard_request = CLIProxy.from_anthropic(req_data, client_profile=CLAUDE_CODE_OPENAI_PROFILE, native_fc_enabled=native_fc_enabled)
     CLIProxy.log_conversion("anthropic", standard_request.response_model, len(standard_request.prompt), len(standard_request.tools))
     return standard_request
 

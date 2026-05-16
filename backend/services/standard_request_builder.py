@@ -45,9 +45,9 @@ def _resolve_thinking_enabled(req_data: dict) -> bool:
 
     return False
 
-def build_chat_standard_request(req_data: dict, *, default_model: str, surface: str, client_profile: str = "openclaw_openai") -> StandardRequest:
+def build_chat_standard_request(req_data: dict, *, default_model: str, surface: str, client_profile: str = "openclaw_openai", native_fc_enabled: bool = False) -> StandardRequest:
     requested_model = req_data.get("model", default_model)
-    prompt_result = messages_to_prompt(req_data, client_profile=client_profile)
+    prompt_result = messages_to_prompt(req_data, client_profile=client_profile, native_fc_enabled=native_fc_enabled)
     tools = prompt_result.tools
     tool_names = [tool_name for tool_name in (tool.get("name") for tool in tools) if isinstance(tool_name, str) and tool_name]
     return StandardRequest(

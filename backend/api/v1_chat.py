@@ -46,6 +46,7 @@ def _build_standard_request(req_data: dict, *, client_profile: str) -> StandardR
         default_model="gpt-3.5-turbo",
         surface="openai",
         client_profile=client_profile,
+        native_fc_enabled=bool(req_data.get("tools")),
     )
     log.info("[OAI] normalized tools=%s profile=%s", standard_request.tool_names, client_profile)
     return standard_request
