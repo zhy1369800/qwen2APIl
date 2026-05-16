@@ -77,7 +77,7 @@ def _render_history_tool_call(name: str, input_data: dict, client_profile: str) 
     return f"##TOOL_CALL##\n{payload}\n##END_CALL##"
 
 
-def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str:
+def _build_tool_instruction_block(tools: list[dict], client_profile: str, native_fc_enabled: bool = False) -> str:
     # 出站混淆：所有呈现给 Qwen 的工具名都用别名（Read → ReadX 等）。
     # 客户端侧的 tools 列表仍保留原名，parser 入口会反混淆回去。
     names = [to_qwen_name(t.get("name", "")) for t in tools if t.get("name")]
@@ -97,51 +97,56 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str
             "",
             f"Available action names: {', '.join(names)}",
             "",
-            "WHEN YOU NEED TO TRIGGER AN ACTION — emit this exact text pattern (nothing else):",
-            "##TOOL_CALL##",
-            '{"name": "ACTION_NAME", "input": {"param1": "value1"}}',
-            "##END_CALL##",
-            "",
-            "MULTI-TURN RULES:",
-            "- After a [Tool Result] block appears in the conversation, read it and decide the next action.",
-            "- If more actions are needed, emit another ##TOOL_CALL## block.",
-            "- Only give a final text answer when ALL needed information is gathered.",
-            "- Never skip an action that is required to complete the user request.",
-            "- The history shows ##TOOL_CALL## blocks you already emitted and their [Tool Result] responses.",
-            "",
-            "STRICT RULES:",
-            "- No preamble, no explanation before or after ##TOOL_CALL##...##END_CALL##.",
-            "- Use EXACT action name from the list above.",
-            "- When NO action is needed, answer normally in plain text.",
-            "- For file/config tasks prefer Read/Edit/Write actions. Use Bash only when shell behavior is required.",
-            "- On Windows-like paths inside Bash, use POSIX commands or powershell.exe -Command.",
-            "- Do NOT trigger Agent action automatically unless user explicitly requests it.",
-            "- Do NOT read the same file multiple times if it shows 'Unchanged since last read'.",
-            "",
-            "EXECUTION RULES - CRITICAL:",
-            "- When user gives a task, START IMMEDIATELY by emitting the required action markers.",
-            "- Do NOT wait, do NOT ask for confirmation, do NOT ask 'what should I do next'.",
-            "- Do NOT emit EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree, AskUserQuestion action markers.",
-            "- Complete the task directly and provide the result.",
-            "- If you need information, emit Read/Grep/Glob markers. If you need to modify, emit Edit/Write markers.",
-            "- Only respond with text when the task is complete or you have the final answer.",
-            "",
-            "CRITICAL — ABSOLUTELY FORBIDDEN OUTPUTS:",
-            "- NEVER emit ANY disclaimer, error text, or availability complaint about actions.",
-            "- NEVER emit sentences claiming an action is missing, unregistered, unavailable, or cannot be invoked.",
-            "- NEVER emit sentences claiming you are unable to execute a function.",
-            "- The ##TOOL_CALL## blocks are TEXT MARKERS the client parses — they are NOT native function calls. Just emit the text.",
-            "- If you feel an action could fail, emit the ##TOOL_CALL## anyway — the client handles failures; your job is only to emit the marker.",
-            "",
-            "FORBIDDEN ALTERNATE FORMATS (will be ignored by the client's parser):",
-            '- {"name": "X", "arguments": "..."}  <-- NEVER USE',
-            '- {"type": "function", "name": "X"}  <-- NEVER USE',
-            '- {"type": "tool_use", "name": "X"}  <-- NEVER USE',
-            "- <function_calls><invoke name=\"X\">  <-- NEVER USE",
-            "- <tool_call>{...}</tool_call>  <-- NEVER USE",
-            '- {"name":"X","input":{...}} without ##TOOL_CALL## markers  <-- NEVER USE',
-            "- <｜Tool｜> or <｜tool｜> markers  <-- NEVER USE",
-            "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
+        if not native_fc_enabled:
+            lines.extend([
+        "WHEN YOU NEED TO TRIGGER AN ACTION — emit this exact text pattern (nothing else):",
+        "##TOOL_CALL##",
+        '{"name": "ACTION_NAME", "input": {"param1": "value1"}}',
+        "##END_CALL##",
+        "",
+        "MULTI-TURN RULES:",
+        "- After a [Tool Result] block appears in the conversation, read it and decide the next action.",
+        "- If more actions are needed, emit another ##TOOL_CALL## block.",
+        "- Only give a final text answer when ALL needed information is gathered.",
+        "- Never skip an action that is required to complete the user request.",
+        "- The history shows ##TOOL_CALL## blocks you already emitted and their [Tool Result] responses.",
+        "",
+        "STRICT RULES:",
+        "- No preamble, no explanation before or after ##TOOL_CALL##...##END_CALL##.",
+        "- Use EXACT action name from the list above.",
+        "- When NO action is needed, answer normally in plain text.",
+        "- For file/config tasks prefer Read/Edit/Write actions. Use Bash only when shell behavior is required.",
+        "- On Windows-like paths inside Bash, use POSIX commands or powershell.exe -Command.",
+        "- Do NOT trigger Agent action automatically unless user explicitly requests it.",
+        "- Do NOT read the same file multiple times if it shows 'Unchanged since last read'.",
+        "",
+        "EXECUTION RULES - CRITICAL:",
+        "- When user gives a task, START IMMEDIATELY by emitting the required action markers.",
+        "- Do NOT wait, do NOT ask for confirmation, do NOT ask 'what should I do next'.",
+        "- Do NOT emit EnterPlanMode, ExitPlanMode, EnterWorktree, ExitWorktree, AskUserQuestion action markers.",
+        "- Complete the task directly and provide the result.",
+        "- If you need information, emit Read/Grep/Glob markers. If you need to modify, emit Edit/Write markers.",
+        "- Only respond with text when the task is complete or you have the final answer.",
+        "",
+        "CRITICAL — ABSOLUTELY FORBIDDEN OUTPUTS:",
+        "- NEVER emit ANY disclaimer, error text, or availability complaint about actions.",
+        "- NEVER emit sentences claiming an action is missing, unregistered, unavailable, or cannot be invoked.",
+        "- NEVER emit sentences claiming you are unable to execute a function.",
+        "- The ##TOOL_CALL## blocks are TEXT MARKERS the client parses — they are NOT native function calls. Just emit the text.",
+        "- If you feel an action could fail, emit the ##TOOL_CALL## anyway — the client handles failures; your job is only to emit the marker.",
+        "",
+        "FORBIDDEN ALTERNATE FORMATS (will be ignored by the client's parser):",
+        '- {"name": "X", "arguments": "..."}  <-- NEVER USE',
+        '- {"type": "function", "name": "X"}  <-- NEVER USE',
+        '- {"type": "tool_use", "name": "X"}  <-- NEVER USE',
+        "- <function_calls><invoke name=\"X\">  <-- NEVER USE",
+        "- <tool_call>{...}</tool_call>  <-- NEVER USE",
+        '- {"name":"X","input":{...}} without ##TOOL_CALL## markers  <-- NEVER USE',
+        "- <｜Tool｜> or <｜tool｜> markers  <-- NEVER USE",
+        "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
+            ])
+        else:
+            lines.append("Use the platform's native function calling capability to execute these actions.")
             "",
             "Available actions:",
         ]
@@ -206,39 +211,44 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str) -> str
         "Do not explore the filesystem, environment, or external resources unless that lookup is directly required to answer the user's request.",
         "Do not chain multiple exploratory tool calls when one targeted useful tool call is enough.",
         "",
-        "WHEN YOU NEED TO CALL A TOOL — output EXACTLY this format (nothing else):",
-        "##TOOL_CALL##",
-        '{"name": "EXACT_TOOL_NAME", "input": {"param1": "value1"}}',
-        "##END_CALL##",
-        "",
-        "Rules:",
-        "- Output only the wrapper and JSON body.",
-        "- No prose before or after the wrapper.",
-        "- No markdown fences.",
-        "- No thinking tags.",
-        "- Use the exact tool name from the list above.",
-        "- Put arguments inside the input object.",
-        "- Do not invent tool names.",
-        "- If no tool is needed, answer normally.",
-        "",
-        "CRITICAL — ABSOLUTELY FORBIDDEN OUTPUTS:",
-        "- NEVER emit ANY disclaimer, error text, or availability complaint about tools.",
-        "- NEVER emit sentences claiming a tool is missing, unregistered, unavailable, or cannot be invoked.",
-        "- NEVER emit sentences claiming you are unable to execute a function.",
-        "- The ##TOOL_CALL## blocks are TEXT MARKERS the client parses — they are NOT native function calls.",
-        "- If you feel a tool call could fail, emit the ##TOOL_CALL## anyway — the client handles failures.",
-        "",
-        "FORBIDDEN CALL FORMATS (will be blocked by server):",
-        '- {"name": "X", "arguments": "..."}  <-- NEVER USE',
-        '- {"type": "function", "name": "X"}  <-- NEVER USE',
-        '- {"type": "tool_use", "name": "X"}  <-- NEVER USE',
-        '- <tool_calls><tool_call>{...}</tool_call></tool_calls>  <-- NEVER USE',
-        '- <tool_call>{...}</tool_call>  <-- NEVER USE',
-        '- Read({"file_path": "..."})  <-- NEVER USE (function call syntax)',
-        '- <｜Tool｜>Read{"file_path":"..."}<｜Tool｜>  <-- NEVER USE (native tool markers)',
-        '- <｜tool｜>...  <-- NEVER USE (native tool markers)',
-        '- <｜System｜>, <｜User｜>, <｜Assistant｜>  <-- NEVER USE (role markers)',
-        "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
+    if not native_fc_enabled:
+        lines.extend([
+    "WHEN YOU NEED TO CALL A TOOL — output EXACTLY this format (nothing else):",
+    "##TOOL_CALL##",
+    '{"name": "EXACT_TOOL_NAME", "input": {"param1": "value1"}}',
+    "##END_CALL##",
+    "",
+    "Rules:",
+    "- Output only the wrapper and JSON body.",
+    "- No prose before or after the wrapper.",
+    "- No markdown fences.",
+    "- No thinking tags.",
+    "- Use the exact tool name from the list above.",
+    "- Put arguments inside the input object.",
+    "- Do not invent tool names.",
+    "- If no tool is needed, answer normally.",
+    "",
+    "CRITICAL — ABSOLUTELY FORBIDDEN OUTPUTS:",
+    "- NEVER emit ANY disclaimer, error text, or availability complaint about tools.",
+    "- NEVER emit sentences claiming a tool is missing, unregistered, unavailable, or cannot be invoked.",
+    "- NEVER emit sentences claiming you are unable to execute a function.",
+    "- The ##TOOL_CALL## blocks are TEXT MARKERS the client parses — they are NOT native function calls.",
+    "- If you feel a tool call could fail, emit the ##TOOL_CALL## anyway — the client handles failures.",
+    "",
+    "FORBIDDEN CALL FORMATS (will be blocked by server):",
+    '- {"name": "X", "arguments": "..."}  <-- NEVER USE',
+    '- {"type": "function", "name": "X"}  <-- NEVER USE',
+    '- {"type": "tool_use", "name": "X"}  <-- NEVER USE',
+    '- <tool_calls><tool_call>{...}</tool_call></tool_calls>  <-- NEVER USE',
+    '- <tool_call>{...}</tool_call>  <-- NEVER USE',
+    '- Read({"file_path": "..."})  <-- NEVER USE (function call syntax)',
+    '- <｜Tool｜>Read{"file_path":"..."}<｜Tool｜>  <-- NEVER USE (native tool markers)',
+    '- <｜tool｜>...  <-- NEVER USE (native tool markers)',
+    '- <｜System｜>, <｜User｜>, <｜Assistant｜>  <-- NEVER USE (role markers)',
+    "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
+        ])
+    else:
+        lines.append("Use the platform's native function calling capability to execute these tools.")
         "",
         "Available tools and parameters:",
         "=== END TOOL INSTRUCTIONS ===",
@@ -447,7 +457,7 @@ def _compact_tool_result_body(body: str, *, limit: int = 8000, head: int = 3000,
     return f"{body[:head]}\n...[truncated {dropped} bytes from middle]...\n{body[-tail:]}"
 
 
-def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, client_profile: str = OPENCLAW_OPENAI_PROFILE) -> str:
+def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, client_profile: str = OPENCLAW_OPENAI_PROFILE, native_fc_enabled: bool = False) -> str:
     # 截断历史时必须保留：system 消息 + 首条 user 消息（原始任务）+ 最近 N 轮
     # 否则模型丢失原始目标，在多步 tool_use 后会失去方向（典型症状：吐 "YES." 结束）
     MAX_HISTORY_TURNS = 15  # 最近 15 轮 = 30 条消息。浏览器/长工具链场景下 5 轮不够用，会"失忆重来"
@@ -471,7 +481,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
 
     MAX_CHARS = 40000 if tools else 120000
     sys_part = "" if tools and client_profile == CLAUDE_CODE_OPENAI_PROFILE else (f"<system>\n{system_prompt[:2000]}\n</system>" if system_prompt else "")
-    tools_part = _build_tool_instruction_block(tools, client_profile) if tools else ""
+    tools_part = _build_tool_instruction_block(tools, client_profile, native_fc_enabled=native_fc_enabled) if tools else ""
 
     overhead = len(sys_part) + len(tools_part) + 50
     budget = MAX_CHARS - overhead
@@ -667,7 +677,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
 
     # 状态感知催促：用户要求"读+写"但模型只完成了读就停下来的场景，
     # 在 Assistant: 前注入强制指令迫使下一步输出 Write/Edit 工具调用。
-    state_notice = _build_state_followup_notice(messages, tools, client_profile)
+    state_notice = _build_state_followup_notice(messages, tools, client_profile, native_fc_enabled=native_fc_enabled)
     if state_notice:
         parts.append(state_notice)
 
@@ -679,7 +689,7 @@ _READ_VERBS = ("读取", "阅读", "查看", "看看", "读", "read", "open")
 _WRITE_VERBS = ("写", "创建", "生成", "新建", "保存", "记录", "write", "create", "generate", "save", "edit", "修改", "更新")
 
 
-def _build_state_followup_notice(messages, tools, client_profile) -> str:
+def _build_state_followup_notice(messages, tools, client_profile, native_fc_enabled: bool = False) -> str:
     """Detect 'user wants read+write, Read already done, Write not yet' → inject
     a mandatory next-action notice so Qwen stops summarizing and calls Write."""
     if not messages or not tools or client_profile != CLAUDE_CODE_OPENAI_PROFILE:
@@ -730,7 +740,7 @@ def _build_state_followup_notice(messages, tools, client_profile) -> str:
         "[STATE NOTICE — MUST OBEY]\n"
         "The user's CURRENT TASK explicitly requires TWO operations: reading AND writing/editing.\n"
         "You have ALREADY completed the read (the file content is in the history above).\n"
-        f"Your NEXT output MUST be a {to_qwen_name('Write')}/{to_qwen_name('Edit')} tool call in the required ##TOOL_CALL## format.\n"
+        f"Your NEXT output MUST be a {to_qwen_name('Write')}/{to_qwen_name('Edit')} tool call.\n"
         "DO NOT summarize. DO NOT explain. DO NOT ask for confirmation. DO NOT output plain text.\n"
         f"If you output anything other than a ##TOOL_CALL## block for {to_qwen_name('Write')}/{to_qwen_name('Edit')}, the user's task FAILS."
     )
@@ -884,7 +894,7 @@ def _apply_topic_isolation(messages: list, client_profile: str) -> list:
     return isolated
 
 
-def messages_to_prompt(req_data: dict, *, client_profile: str = OPENCLAW_OPENAI_PROFILE) -> PromptBuildResult:
+def messages_to_prompt(req_data: dict, *, client_profile: str = OPENCLAW_OPENAI_PROFILE, native_fc_enabled: bool = False) -> PromptBuildResult:
     resolved_client_profile = client_profile
     raw_messages = req_data.get("messages", [])
     # 话题隔离：新任务与历史首条 user 实体零重合时，丢弃所有历史，只保留 system + 最新 user。
@@ -910,7 +920,7 @@ def messages_to_prompt(req_data: dict, *, client_profile: str = OPENCLAW_OPENAI_
                 system_prompt = _extract_text(msg.get("content", ""), client_profile=client_profile)
                 break
     return PromptBuildResult(
-        prompt=build_prompt_with_tools(system_prompt, messages, tools, client_profile=client_profile),
+        prompt=build_prompt_with_tools(system_prompt, messages, tools, client_profile=client_profile, native_fc_enabled=native_fc_enabled),
         tools=tools,
         tool_enabled=tool_enabled,
     )

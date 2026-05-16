@@ -195,7 +195,11 @@ async def anthropic_count_tokens(request: Request):
         req_data = await request.json()
     except Exception:
         raise HTTPException(400, {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}})
-    prompt_result = messages_to_prompt(req_data, client_profile=CLAUDE_CODE_OPENAI_PROFILE)
+    prompt_result = messages_to_prompt(
+        req_data, 
+        client_profile=CLAUDE_CODE_OPENAI_PROFILE,
+        native_fc_enabled=bool(req_data.get("tools"))
+    )
     base_tokens = count_tokens(prompt_result.prompt)
     # Context Pressure Inflation:
     # Claude Code 假设 context window=200K，到 ~80%(160K) 触发自动压缩。
