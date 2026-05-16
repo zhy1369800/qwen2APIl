@@ -10,7 +10,7 @@ CUSTOM_TOOL_COMPAT_FEATURE_CONFIG = {
     "thinking_mode": "Auto",
     "thinking_format": "summary",
     "auto_search": False,
-    "code_interpreter": False,
+    "code_interpreter": True,  # 开启原生代码解释器
     "plugins_enabled": False,
 }
 
@@ -25,15 +25,13 @@ def build_chat_payload(
     ts = int(time.time())
     feature_config = {
         **CUSTOM_TOOL_COMPAT_FEATURE_CONFIG,
-        # Our Anthropic/OpenAI bridge relies on textual JSON/XML tool directives
-        # that are parsed locally. Enabling Qwen native function_calling here causes
-        # upstream interception such as `Tool Read/Bash does not exists.` for custom
-        # local tools that only exist in the bridge layer.
-        "function_calling": False,
-        # Additional safeguards to prevent tool call interception
-        "enable_tools": False,
-        "enable_function_call": False,
-        "tool_choice": "none",
+        # 虽然开启原生 function_calling 可能会导致上游产生 "Tool X does not exists" 的拦截文本，
+        # 但我们已经在 execution.py 中实现了抢救逻辑，可以从拦截响应中提取工具调用。
+        # 开启此开关能显著提升 Qwen 输出结构化工具调用的稳定性。
+        "function_calling": has_custom_tools,
+        "enable_tools": has_custom_tools,
+        "enable_function_call": has_custom_tools,
+        "tool_choice": "auto" if has_custom_tools else "none",
     }
     if not thinking_enabled:
         feature_config["thinking_enabled"] = False
