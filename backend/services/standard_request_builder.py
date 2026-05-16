@@ -7,6 +7,10 @@ from backend.toolcall.normalize import build_tool_name_registry
 
 
 def _resolve_thinking_enabled(req_data: dict) -> bool:
+    feature_config = req_data.get("feature_config")
+    if not isinstance(feature_config, dict):
+        feature_config = {}
+
     # 显式禁止
     reasoning_effort = str(req_data.get("reasoning_effort", "") or "").strip().lower()
     if reasoning_effort == "none":
@@ -27,6 +31,12 @@ def _resolve_thinking_enabled(req_data: dict) -> bool:
 
     if req_data.get("include_reasoning") is False:
         return False
+    if feature_config.get("thinking_enabled") is False:
+        return False
+    if feature_config.get("auto_thinking") is False and feature_config.get("thinking_enabled") is not True:
+        return False
+    if str(feature_config.get("thinking_mode", "") or "").strip().lower() == "none":
+        return False
 
     # 显式开启
     if reasoning_effort in ("low", "medium", "high"):
@@ -36,6 +46,12 @@ def _resolve_thinking_enabled(req_data: dict) -> bool:
     if thinking is True or (isinstance(thinking, dict) and thinking.get("enabled") is True):
         return True
     if req_data.get("include_reasoning") is True:
+        return True
+    if feature_config.get("thinking_enabled") is True:
+        return True
+    if feature_config.get("auto_thinking") is True:
+        return True
+    if str(feature_config.get("thinking_mode", "") or "").strip().lower() in ("auto", "on", "enabled"):
         return True
 
     # 默认：根据模型名推断，如果是推理模型则默认开启，否则默认关闭

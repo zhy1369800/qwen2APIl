@@ -48,7 +48,12 @@ def _build_standard_request(req_data: dict, *, client_profile: str) -> StandardR
         client_profile=client_profile,
         native_fc_enabled=bool(req_data.get("tools")),
     )
-    log.info("[OAI] normalized tools=%s profile=%s", standard_request.tool_names, client_profile)
+    log.info(
+        "[OAI] normalized tools=%s profile=%s thinking_enabled=%s",
+        standard_request.tool_names,
+        client_profile,
+        standard_request.thinking_enabled,
+    )
     return standard_request
 
 
@@ -66,7 +71,29 @@ async def chat_completions(request: Request):
         req_data = await request.json()
     except Exception:
         raise HTTPException(400, {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}})
-
+    try:
+        raw_request_dump = json.dumps(req_data, ensure_ascii=False, indent=2)
+    except Exception:
+        raw_request_dump = str(req_data)
+    feature_config = req_data.get("feature_config")
+    if not isinstance(feature_config, dict):
+        feature_config = {}
+    log.info(
+        "[OAI] raw request model=%s stream=%s thinking=%r reasoning=%r include_reasoning=%r reasoning_effort=%r feature_config=%s\n%s",
+        req_data.get("model"),
+        req_data.get("stream"),
+        req_data.get("thinking"),
+        req_data.get("reasoning"),
+        req_data.get("include_reasoning"),
+        req_data.get("reasoning_effort"),
+        {
+            "thinking_enabled": feature_config.get("thinking_enabled"),
+            "auto_thinking": feature_config.get("auto_thinking"),
+            "thinking_mode": feature_config.get("thinking_mode"),
+            "thinking_format": feature_config.get("thinking_format"),
+        },
+        raw_request_dump,
+    )
     client_profile = _detect_openai_client_profile(request, req_data)
     session_key = derive_session_key("openai", token, req_data)
     original_history_messages = req_data.get("messages", [])
