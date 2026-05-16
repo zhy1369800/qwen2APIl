@@ -79,10 +79,12 @@ async def chat_completions(request: Request):
     if not isinstance(feature_config, dict):
         feature_config = {}
     log.info(
-        "[OAI] raw request model=%s stream=%s thinking=%r reasoning=%r include_reasoning=%r reasoning_effort=%r feature_config=%s\n%s",
+        "[OAI] raw request model=%s stream=%s thinking=%r enable_thinking=%r thinking_budget=%r reasoning=%r include_reasoning=%r reasoning_effort=%r feature_config=%s\n%s",
         req_data.get("model"),
         req_data.get("stream"),
         req_data.get("thinking"),
+        req_data.get("enable_thinking"),
+        req_data.get("thinking_budget"),
         req_data.get("reasoning"),
         req_data.get("include_reasoning"),
         req_data.get("reasoning_effort"),
