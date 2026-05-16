@@ -50,6 +50,20 @@ class RuntimeAttemptState:
     raw_events: list[dict[str, Any]] = field(default_factory=list)
     emitted_visible_output: bool = False
     stage_metrics: dict[str, float] = field(default_factory=dict)
+    native_function_call: dict[str, Any] | None = None
+    native_function_blocked_hint: bool = False
+
+
+@dataclass(slots=True)
+class NativeFunctionCallState:
+    tool_id: str | None = None
+    raw_name: str | None = None
+    normalized_name: str | None = None
+    arguments_text: str = ""
+    emitted_start: bool = False
+    confirmed: bool = False
+    blocked_hint: bool = False
+    ignored: bool = False
 
 
 @dataclass(slots=True)
@@ -179,7 +193,103 @@ def extract_blocked_tool_names(text: str, allowed_tool_names: list[str] | None =
     return [normalize_tool_name(name, allowed_tool_names) for name in blocked]
 
 
-def _recent_message_texts(messages: list[dict[str, Any]] | None, *, limit: int = 10) -> list[str]:
+def _json_braces_balanced(text: str) -> bool:
+    if not text.strip():
+        return False
+    depth = 0
+    max_depth = 0
+    for ch in text:
+        if ch in "{[":
+            depth += 1
+            if depth > max_depth:
+                max_depth = depth
+        elif ch in "]}":
+            depth -= 1
+    return max_depth > 0 and depth <= 0
+
+
+def snapshot_native_function_call(
+    native_state: NativeFunctionCallState,
+) -> dict[str, Any] | None:
+    if not native_state.raw_name:
+        return None
+    snapshot: dict[str, Any] = {
+        "id": native_state.tool_id,
+        "raw_name": native_state.raw_name,
+        "name": native_state.normalized_name,
+        "arguments_text": native_state.arguments_text,
+        "confirmed": native_state.confirmed,
+    }
+    if native_state.confirmed and native_state.arguments_text.strip():
+        try:
+            snapshot["input"] = json.loads(native_state.arguments_text)
+        except Exception:
+            snapshot["input"] = {"raw_args": native_state.arguments_text}
+    return snapshot
+
+
+def try_confirm_native_function_call(
+    native_state: NativeFunctionCallState,
+) -> dict[str, Any] | None:
+    if (
+        native_state.confirmed
+        or not native_state.normalized_name
+        or not native_state.tool_id
+    ):
+        return None
+    if not _json_braces_balanced(native_state.arguments_text):
+        return None
+    try:
+        args_obj = json.loads(native_state.arguments_text)
+    except Exception:
+        args_obj = {"raw_args": native_state.arguments_text}
+    native_state.confirmed = True
+    return {
+        "type": "tool_use",
+        "id": native_state.tool_id,
+        "name": native_state.normalized_name,
+        "input": args_obj,
+    }
+
+
+def recover_confirmed_native_tool_call(
+    state: RuntimeAttemptState, request: StandardRequest
+) -> dict[str, Any] | None:
+    native_call = state.native_function_call
+    if not isinstance(native_call, dict):
+        return None
+    name = native_call.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    if request.tool_names and name not in request.tool_names:
+        return None
+    tool_id = native_call.get("id") or "toolu_native_recovered"
+    input_obj = native_call.get("input")
+    if isinstance(input_obj, dict):
+        return {
+            "type": "tool_use",
+            "id": tool_id,
+            "name": normalize_tool_name(name, request.tool_names),
+            "input": input_obj,
+        }
+    arguments_text = native_call.get("arguments_text", "")
+    if not isinstance(arguments_text, str) or not _json_braces_balanced(arguments_text):
+        return None
+    try:
+        input_obj = json.loads(arguments_text)
+    except Exception:
+        input_obj = {"raw_args": arguments_text}
+    return {
+        "type": "tool_use",
+        "id": tool_id,
+        "name": normalize_tool_name(name, request.tool_names),
+        "input": input_obj,
+    }
+
+
+def _recent_message_texts(
+    messages: list[dict[str, Any]] | None, *, limit: int = 10
+) -> list[str]:
     texts: list[str] = []
     checked = 0
     for msg in reversed(messages or []):
@@ -535,6 +645,8 @@ async def collect_completion_run(
             raw_events=raw_events,
             emitted_visible_output=emitted_visible_output,
             stage_metrics=metrics.summary(),
+            native_function_call=snapshot_native_function_call(native_state),
+            native_function_blocked_hint=native_state.blocked_hint,
         )
         return RuntimeExecutionResult(state=state, chat_id=chat_id, acc=acc)
 
@@ -784,7 +896,14 @@ async def collect_completion_run(
                     await _ensure_reasoning_closed()
                     directive = parse_tool_directive_once(
                         request,
-                        RuntimeAttemptState(answer_text=answer_text, reasoning_text="".join(reasoning_fragments)),
+                        RuntimeAttemptState(
+                            answer_text=answer_text,
+                            reasoning_text="".join(reasoning_fragments),
+                            native_function_call=snapshot_native_function_call(
+                                native_state
+                            ),
+                            native_function_blocked_hint=native_state.blocked_hint,
+                        ),
                     )
                     if directive.stop_reason == "tool_use":
                         return _finalize_result(reason="textual_tool_use")
