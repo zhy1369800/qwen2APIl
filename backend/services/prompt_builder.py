@@ -97,6 +97,7 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
             "",
             f"Available action names: {', '.join(names)}",
             "",
+        ]
         if not native_fc_enabled:
             lines.extend([
         "WHEN YOU NEED TO TRIGGER AN ACTION — emit this exact text pattern (nothing else):",
@@ -147,9 +148,8 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
             ])
         else:
             lines.append("Use the platform's native function calling capability to execute these actions.")
-            "",
-            "Available actions:",
-        ]
+            lines.append("")
+            lines.append("Available actions:")
         if len(names) <= 12:
             for tool in tools:
                 name = to_qwen_name(tool.get("name", ""))
@@ -211,6 +211,7 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
         "Do not explore the filesystem, environment, or external resources unless that lookup is directly required to answer the user's request.",
         "Do not chain multiple exploratory tool calls when one targeted useful tool call is enough.",
         "",
+    ]
     if not native_fc_enabled:
         lines.extend([
     "WHEN YOU NEED TO CALL A TOOL — output EXACTLY this format (nothing else):",
@@ -249,10 +250,9 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
         ])
     else:
         lines.append("Use the platform's native function calling capability to execute these tools.")
-        "",
-        "Available tools and parameters:",
-        "=== END TOOL INSTRUCTIONS ===",
-    ]
+        lines.append("")
+        lines.append("Available tools and parameters:")
+        lines.append("=== END TOOL INSTRUCTIONS ===")
     if len(names) <= 20:
         tool_lines = []
         for tool in tools:
