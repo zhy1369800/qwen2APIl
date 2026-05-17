@@ -126,6 +126,23 @@ def _extract_images_from_raw_events(raw_events: list[dict[str, Any]] | None) -> 
     return merged[:10]
 
 
+def _build_metadata_stream_chunk(
+    *,
+    completion_id: str,
+    created: int,
+    model_name: str,
+    metadata: dict[str, Any],
+) -> str:
+    payload = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model_name,
+        "choices": [{"index": 0, "delta": {"metadata": metadata}, "finish_reason": None}],
+    }
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 @router.post("/chat/completions")
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
@@ -282,7 +299,7 @@ async def chat_completions(request: Request):
                                 max_attempts=request_max_attempts(standard_request),
                                 usage_delta_factory=build_usage_delta_factory(prompt),
                                 allow_after_visible_output=False,
-                                capture_events=False,
+                                capture_events=True,
                                 on_delta=on_delta,
                             )
                             execution = result.execution
@@ -306,6 +323,22 @@ async def chat_completions(request: Request):
                                 execution=execution,
                                 assistant_message=assistant_message,
                             )
+                            stream_metadata: dict[str, Any] = {}
+                            stream_sources = _extract_sources_from_raw_events(getattr(execution.state, "raw_events", None))
+                            stream_images = _extract_images_from_raw_events(getattr(execution.state, "raw_events", None))
+                            if stream_sources:
+                                stream_metadata["sources"] = stream_sources
+                            if stream_images:
+                                stream_metadata["images"] = stream_images
+                            if stream_metadata:
+                                await queue.put(
+                                    _build_metadata_stream_chunk(
+                                        completion_id=completion_id,
+                                        created=created,
+                                        model_name=model_name,
+                                        metadata=stream_metadata,
+                                    )
+                                )
                             final_finish_reason = "tool_calls" if directive.stop_reason == "tool_use" else execution.state.finish_reason
                             for chunk in translator.finalize(final_finish_reason):
                                 await queue.put(chunk)
