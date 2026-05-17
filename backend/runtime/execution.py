@@ -706,15 +706,25 @@ async def collect_completion_run(
                 first_event_marked = True
 
             # Tool Sieve 实时检测
+            sieve_content_emitted = False
+            sieve_intercepted = False
             if tool_sieve:
                 sieve_events = tool_sieve.process_chunk(content)
                 for sieve_evt in sieve_events:
-                    if sieve_evt.get("type") == "tool_calls_start":
+                    evt_type = sieve_evt.get("type")
+                    if evt_type == "content":
+                        text_part = sieve_evt.get("text", "")
+                        if on_delta is not None and text_part:
+                            await on_delta(evt, text_part, None)
+                            sieve_content_emitted = True
+                    elif evt_type == "tool_calls_start":
+                        sieve_intercepted = True
                         calls = sieve_evt.get("calls", [])
                         if on_delta is not None and calls:
                             await on_delta(evt, None, calls)
                         await _ensure_reasoning_closed()
-                    elif sieve_evt.get("type") == "tool_calls_chunk":
+                    elif evt_type == "tool_calls_chunk":
+                        sieve_intercepted = True
                         calls = sieve_evt.get("calls", [])
                         if on_delta is not None and calls:
                             await on_delta(evt, None, calls)
@@ -738,7 +748,8 @@ async def collect_completion_run(
                                             native_tool_calls.extend(valid)
                                             log.info("[Collect] ✓ ToolSieve JSON 闭合，提前 return: tools=%s", [c["name"] for c in valid])
                                             return _finalize_result(reason="tool_sieve_stream_complete")
-                    elif sieve_evt.get("type") == "tool_calls":
+                    elif evt_type == "tool_calls":
+                        sieve_intercepted = True
                         # 检测到工具调用！
                         calls = sieve_evt.get("calls", [])
                         if calls:
@@ -763,7 +774,8 @@ async def collect_completion_run(
                                     await on_delta(evt, None, valid_calls_to_emit)
                             await _ensure_reasoning_closed()
                             return _finalize_result(reason="tool_sieve_detected")
-                    elif sieve_evt.get("type") == "tool_detected":
+                    elif evt_type == "tool_detected":
+                        sieve_intercepted = True
                         await _ensure_reasoning_closed()
 
             if request.tools:
@@ -795,7 +807,7 @@ async def collect_completion_run(
                     if blocked_tool_names:
                         return _finalize_result(reason=f"blocked_tool_name:{blocked_tool_names[0]}")
 
-            if on_delta is not None:
+            if on_delta is not None and (not tool_sieve or (not sieve_content_emitted and not sieve_intercepted)):
                 await on_delta(evt, content, None)
 
             if request.tools:
