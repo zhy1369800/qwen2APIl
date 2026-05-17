@@ -42,6 +42,8 @@ class OpenAIStreamTranslator:
         self.tool_calls_emitted = False
         self.reasoning_started = False
         self.reasoning_closed = False
+        self.current_stream_tool_id: str | None = None
+        self.current_stream_tool_name: str | None = None
         self.tool_text_detection_mode = self._resolve_tool_text_detection_mode(client_profile)
         self.tool_call_finalize_mode = self._resolve_tool_call_finalize_mode(client_profile)
         self.enable_prefix_probe = bool(self.allowed_tool_names)
@@ -345,6 +347,8 @@ class OpenAIStreamTranslator:
     def emit_tool_call_start(self, tool_id: str, tool_name: str) -> None:
         self._ensure_role_chunk()
         self._close_reasoning_if_needed()
+        self.current_stream_tool_id = tool_id
+        self.current_stream_tool_name = tool_name
         idx = self.emitted_tool_index
         self.emitted_tool_index += 1
         self.pending_chunks.append(
@@ -357,8 +361,12 @@ class OpenAIStreamTranslator:
         if self.emitted_tool_index == 0:
             return
         idx = self.emitted_tool_index - 1
+        tool_delta: dict[str, Any] = {"index": idx, "function": {"arguments": arguments_chunk}}
+        if self.current_stream_tool_id:
+            tool_delta["id"] = self.current_stream_tool_id
+            tool_delta["type"] = "function"
         self.pending_chunks.append(
-            f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'tool_calls': [{'index': idx, 'function': {'arguments': arguments_chunk}}]}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
+            f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'tool_calls': [tool_delta]}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
         )
 
     def emit_tool_calls(self, tool_calls: list[dict[str, Any]]) -> None:
