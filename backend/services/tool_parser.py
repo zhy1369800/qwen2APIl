@@ -511,12 +511,30 @@ class ToolSieve:
             # --- START INCREMENTAL STREAMING LOGIC ---
             if not getattr(self, "stream_active", False):
                 m_name = re.search(r'"name"\s*:\s*"([^"]+)"', self.capture)
+                xml_invoke_name = None
+                xml_function_name = None
+                if not m_name:
+                    m_invoke = re.search(r"<invoke\s+name=\"([^\"]+)\"", self.capture, re.IGNORECASE)
+                    if m_invoke:
+                        xml_invoke_name = m_invoke.group(1)
+                    else:
+                        m_function = re.search(r"<function=([A-Za-z0-9_.:-]+)\s*>", self.capture, re.IGNORECASE)
+                        if m_function:
+                            xml_function_name = m_function.group(1)
                 if m_name:
                     raw_name = m_name.group(1)
                     from backend.services.tool_name_obfuscation import from_qwen_name
                     from backend.toolcall.normalize import normalize_tool_name
                     self.stream_tool_name = normalize_tool_name(from_qwen_name(raw_name), self.tool_names)
+                elif xml_invoke_name or xml_function_name:
+                    raw_name = xml_invoke_name or xml_function_name
+                    from backend.services.tool_name_obfuscation import from_qwen_name
+                    from backend.toolcall.normalize import normalize_tool_name
+                    self.stream_tool_name = normalize_tool_name(from_qwen_name(raw_name), self.tool_names)
+                else:
+                    raw_name = None
                     
+                if raw_name:
                     self.stream_active = True
                     self.stream_brace_depth = 0
                     self.stream_completed = False
@@ -533,7 +551,8 @@ class ToolSieve:
                             "type": "tool_calls_start",
                             "calls": [{"type": "tool_call_stream_start", "id": self.stream_tool_id, "name": self.stream_tool_name}]
                         })
-                    
+
+                    # JSON 风格参数流式增量；XML 风格只发 start，最终由 flush/parse 产出完整 tool_calls。
                     m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
                     if m_input:
                         args_start_str = m_input.group(1)
