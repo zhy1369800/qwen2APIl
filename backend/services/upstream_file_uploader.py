@@ -21,6 +21,10 @@ def _file_class_from_content_type(content_type: str) -> str:
     return "document"
 
 
+def _is_image_content_type(content_type: str) -> bool:
+    return (content_type or "").lower().startswith("image/")
+
+
 def _normalize_sign_region(region: str) -> str:
     region = (region or "").strip()
     if region.startswith("oss-"):
@@ -37,6 +41,7 @@ class UpstreamFileUploader:
         filename = local_file_meta["filename"]
         file_path = local_file_meta["path"]
         content_type = local_file_meta.get("content_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        is_image = _is_image_content_type(content_type)
         raw = Path(file_path).read_bytes()
 
         sts_resp = await self.client._request_json(
@@ -46,7 +51,7 @@ class UpstreamFileUploader:
             {
                 "filename": filename,
                 "filesize": len(raw),
-                "filetype": "file",
+                "filetype": "image" if is_image else "file",
             },
             timeout=20.0,
         )
@@ -80,40 +85,42 @@ class UpstreamFileUploader:
         if getattr(put_result, 'status', None) not in (200, 201):
             raise RuntimeError(f"OSS put_object failed: status={getattr(put_result, 'status', None)}")
 
-        parse_resp = await self.client._request_json(
-            "POST",
-            "/api/v2/files/parse",
-            acc.token,
-            {"file_id": file_id},
-            timeout=20.0,
-        )
-        if parse_resp.get("status") != 200:
-            raise RuntimeError(f"files/parse failed: {parse_resp.get('status')} {parse_resp.get('body', '')[:200]}")
-
-        deadline = time.time() + self.settings.CONTEXT_UPLOAD_PARSE_TIMEOUT_SECONDS
-        parse_status = "pending"
-        while time.time() < deadline:
-            status_resp = await self.client._request_json(
+        parse_status = "success"
+        if not is_image:
+            parse_resp = await self.client._request_json(
                 "POST",
-                "/api/v2/files/parse/status",
+                "/api/v2/files/parse",
                 acc.token,
-                {"file_id_list": [file_id]},
+                {"file_id": file_id},
                 timeout=20.0,
             )
-            if status_resp.get("status") != 200:
-                raise RuntimeError(f"files/parse/status failed: {status_resp.get('status')} {status_resp.get('body', '')[:200]}")
-            status_data = json.loads(status_resp.get("body", "{}"))
-            rows = status_data.get("data") or []
-            row = rows[0] if isinstance(rows, list) and rows else {}
-            parse_status = row.get("status", "pending")
-            if parse_status == "success":
-                break
-            if parse_status in ("failed", "error"):
-                raise RuntimeError(f"file parse failed: {row}")
-            await __import__('asyncio').sleep(1.0)
+            if parse_resp.get("status") != 200:
+                raise RuntimeError(f"files/parse failed: {parse_resp.get('status')} {parse_resp.get('body', '')[:200]}")
 
-        if parse_status != "success":
-            raise RuntimeError(f"file parse timeout: {file_id}")
+            deadline = time.time() + self.settings.CONTEXT_UPLOAD_PARSE_TIMEOUT_SECONDS
+            parse_status = "pending"
+            while time.time() < deadline:
+                status_resp = await self.client._request_json(
+                    "POST",
+                    "/api/v2/files/parse/status",
+                    acc.token,
+                    {"file_id_list": [file_id]},
+                    timeout=20.0,
+                )
+                if status_resp.get("status") != 200:
+                    raise RuntimeError(f"files/parse/status failed: {status_resp.get('status')} {status_resp.get('body', '')[:200]}")
+                status_data = json.loads(status_resp.get("body", "{}"))
+                rows = status_data.get("data") or []
+                row = rows[0] if isinstance(rows, list) and rows else {}
+                parse_status = row.get("status", "pending")
+                if parse_status == "success":
+                    break
+                if parse_status in ("failed", "error"):
+                    raise RuntimeError(f"file parse failed: {row}")
+                await __import__('asyncio').sleep(1.0)
+
+            if parse_status != "success":
+                raise RuntimeError(f"file parse timeout: {file_id}")
 
         user_id = file_path_remote.split('/', 1)[0] if '/' in file_path_remote else ""
         now_ms = int(time.time() * 1000)
