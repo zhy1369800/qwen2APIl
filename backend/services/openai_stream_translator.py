@@ -13,6 +13,7 @@ BUFFERED_TOOL_CALLS_ONLY = "buffered_tool_calls_only"
 DIRECTIVE_DRIVEN_TOOL_CALLS = "directive_driven_tool_calls"
 TOOL_CALL_PREFIX_PROBE = "##TOOL_CALL"
 MIN_TOOL_PREFIX_CACHE_CHARS = 12
+TOOLISH_PREFIX_MARKERS = ("##TOOL_CALL##", "[TOOL CALL]", "<tool_call>")
 
 
 class OpenAIStreamTranslator:
@@ -65,12 +66,14 @@ class OpenAIStreamTranslator:
         return DIRECTIVE_DRIVEN_TOOL_CALLS
 
     def _split_suspicion_suffix(self, text: str) -> tuple[str, str]:
-        """把文本末尾可能是 ##TOOL_CALL## 前缀的部分切出来暂存，返回 (safe, suspicion)。"""
-        full_marker = TOOL_CALL_PREFIX_PROBE + "##"  # "##TOOL_CALL##"
-        for i in range(min(len(full_marker), len(text)), 0, -1):
-            suffix = text[-i:]
-            if suffix[0] == "#" and full_marker.startswith(suffix):
-                return text[:-i], suffix
+        """把文本末尾可能是工具调用前缀（跨 chunk）切出来暂存，返回 (safe, suspicion)。"""
+        upper_text = text.upper()
+        for marker in TOOLISH_PREFIX_MARKERS:
+            max_i = min(len(marker), len(text))
+            for i in range(max_i, 0, -1):
+                suffix_upper = upper_text[-i:]
+                if marker.startswith(suffix_upper):
+                    return text[:-i], text[-i:]
         return text, ""
 
     def _looks_like_tool_output(self, text_chunk: str) -> bool:
@@ -78,6 +81,7 @@ class OpenAIStreamTranslator:
             return False
         lowered = text_chunk.lower()
         common_markers = (
+            "[tool call]",
             "tool does not exists",
             "function.name:",
             "##tool_call##",
