@@ -49,6 +49,8 @@ class OpenAIStreamTranslator:
         self._suspicion_suffix = ""  # 暂存可能是 ##TOOL_CALL## 前缀的尾部片段
         self.web_sources: list[dict[str, str]] = []
         self.web_sources_emitted = False
+        self.generated_images: list[dict[str, str]] = []
+        self.generated_images_emitted = False
 
     @staticmethod
     def _resolve_tool_text_detection_mode(client_profile: str) -> str:
@@ -212,6 +214,60 @@ class OpenAIStreamTranslator:
         self.pending_chunks.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
         self.web_sources_emitted = True
 
+    @staticmethod
+    def _extract_image_items(evt: dict[str, Any]) -> list[dict[str, str]]:
+        if not isinstance(evt, dict):
+            return []
+        if evt.get("phase") != "image_gen_tool":
+            return []
+        extra = evt.get("extra")
+        if not isinstance(extra, dict):
+            return []
+        raw_items: list[Any] = []
+        raw_items.append(extra.get("image_list"))
+        tool_result = extra.get("tool_result")
+        if isinstance(tool_result, list):
+            raw_items.append(tool_result)
+        out: list[dict[str, str]] = []
+        for raw in raw_items:
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("image") or item.get("url") or "").strip()
+                if not url:
+                    continue
+                out.append({"url": url})
+        return out
+
+    def _save_generated_images(self, evt: dict[str, Any]) -> None:
+        found = self._extract_image_items(evt)
+        if not found:
+            return
+        merged: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for img in [*self.generated_images, *found]:
+            url = img.get("url", "")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            merged.append(img)
+        self.generated_images = merged[:10]
+
+    def _emit_generated_images_chunk(self) -> None:
+        if self.generated_images_emitted or not self.generated_images:
+            return
+        payload = {
+            "id": self.completion_id,
+            "object": "chat.completion.chunk",
+            "created": self.created,
+            "model": self.model_name,
+            "choices": [{"index": 0, "delta": {"metadata": {"images": self.generated_images}}, "finish_reason": None}],
+        }
+        self.pending_chunks.append(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
+        self.generated_images_emitted = True
+
     def on_delta(self, evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
         self._ensure_role_chunk()
 
@@ -222,6 +278,10 @@ class OpenAIStreamTranslator:
             self._save_web_sources(evt)
             if status == "finished":
                 self._emit_web_sources_chunk()
+        if phase == "image_gen_tool":
+            self._save_generated_images(evt)
+            if status == "finished":
+                self._emit_generated_images_chunk()
 
         if phase in ("think", "thinking_summary") and status == "finished":
             self._close_reasoning_if_needed()
@@ -316,6 +376,7 @@ class OpenAIStreamTranslator:
         final_finish_reason = finish_reason
         self._close_reasoning_if_needed()
         self._emit_web_sources_chunk()
+        self._emit_generated_images_chunk()
         if self.enable_prefix_probe and self.prefix_probe_buffer:
             if self.prefix_probe_buffer.startswith(TOOL_CALL_PREFIX_PROBE):
                 self.buffered_toolish_fragments.append(self.prefix_probe_buffer)
