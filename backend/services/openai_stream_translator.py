@@ -13,7 +13,7 @@ BUFFERED_TOOL_CALLS_ONLY = "buffered_tool_calls_only"
 DIRECTIVE_DRIVEN_TOOL_CALLS = "directive_driven_tool_calls"
 TOOL_CALL_PREFIX_PROBE = "##TOOL_CALL"
 MIN_TOOL_PREFIX_CACHE_CHARS = 12
-TOOLISH_PREFIX_MARKERS = ("##TOOL_CALL##", "[TOOL CALL]", "<tool_call>")
+TOOLISH_PREFIX_MARKERS = ("##TOOL_CALL##", "[TOOL CALL]", "<tool_call>", "<INVOKE")
 
 
 class OpenAIStreamTranslator:
@@ -86,6 +86,7 @@ class OpenAIStreamTranslator:
             "function.name:",
             "##tool_call##",
             "##tool_call",
+            "<invoke",
             "##end_call##",
             '"tool_calls"',
             '"function":',
@@ -393,7 +394,12 @@ class OpenAIStreamTranslator:
             self.buffered_toolish_fragments.append(self._suspicion_suffix)
             self._suspicion_suffix = ""
         buffered_text = "".join(self.buffered_toolish_fragments)
-        has_tool_marker = "##tool_call" in buffered_text.lower() or "<tool_call>" in buffered_text.lower()
+        lowered_buffered_text = buffered_text.lower()
+        has_tool_marker = (
+            "##tool_call" in lowered_buffered_text
+            or "<tool_call>" in lowered_buffered_text
+            or "<invoke" in lowered_buffered_text
+        )
         if self.build_final_directive is not None and not self.tool_calls_emitted:
             directive = self.build_final_directive("".join(self.answer_fragments))
             if self._should_finalize_tool_calls(directive):

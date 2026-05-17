@@ -75,6 +75,22 @@ def _extract_first_xml_tool_call(text: str) -> str | None:
     return None
 
 
+def _extract_invoke_xml_tool_call(answer: str) -> tuple[str, dict[str, Any], str] | None:
+    m = re.search(r"<invoke\s+name=\"([^\"]+)\"\s*>([\s\S]*?)</invoke>", answer, re.IGNORECASE)
+    if not m:
+        return None
+    raw_name = m.group(1).strip()
+    body = m.group(2) or ""
+    params: dict[str, Any] = {}
+    for pm in re.finditer(r"<parameter\s+name=\"([^\"]+)\"\s*>([\s\S]*?)</parameter>", body, re.IGNORECASE):
+        key = pm.group(1).strip()
+        val = pm.group(2).strip()
+        if key:
+            params[key] = val
+    prefix = answer[:m.start()].strip()
+    return raw_name, params, prefix
+
+
 def _extract_first_json_tool_call(text: str) -> str | None:
     normalized = text.strip()
 
@@ -368,6 +384,12 @@ def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
         except (json.JSONDecodeError, ValueError) as e:
             _log_warning(f"[ToolParse] XML格式解析失败: {e}, content={xml_m.group(1)[:100]!r}")
 
+    invoke_xml = _extract_invoke_xml_tool_call(answer)
+    if invoke_xml:
+        name, inp, prefix = invoke_xml
+        _log_info(f"[ToolParse] ✓ XML格式 <invoke>: name={name!r}, input={str(inp)[:120]}")
+        return _make_tool_block(name, inp, prefix)
+
     cb_m = re.search(r'```tool_call\s*\n(.*?)\n```', answer, re.DOTALL)
     if cb_m:
         try:
@@ -576,6 +598,7 @@ class ToolSieve:
             '{"tool_calls"',
             '{"name":',
             '<tool_call>',
+            '<invoke name=',
             '##TOOL_CALL##',
             'function.name:',
         ]
@@ -670,7 +693,7 @@ class ToolSieve:
 
     def _looks_like_incomplete_tool_call(self, text: str) -> bool:
         """检查文本是否看起来像不完整的工具调用"""
-        markers = ['{"tool_calls"', '{"name":', '<tool_call>', '##TOOL_CALL##', 'function.name:']
+        markers = ['{"tool_calls"', '{"name":', '<tool_call>', '<invoke name=', '##TOOL_CALL##', 'function.name:']
         return any(marker in text for marker in markers)
 
     def has_tool_calls(self) -> bool:
