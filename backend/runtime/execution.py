@@ -709,6 +709,8 @@ async def collect_completion_run(
             sieve_intercepted = False
             if tool_sieve:
                 sieve_events = tool_sieve.process_chunk(content)
+                if getattr(tool_sieve, "capturing", False):
+                    sieve_intercepted = True
                 for sieve_evt in sieve_events:
                     evt_type = sieve_evt.get("type")
                     if evt_type == "tool_calls_start":
