@@ -706,18 +706,12 @@ async def collect_completion_run(
                 first_event_marked = True
 
             # Tool Sieve 实时检测
-            sieve_content_emitted = False
             sieve_intercepted = False
             if tool_sieve:
                 sieve_events = tool_sieve.process_chunk(content)
                 for sieve_evt in sieve_events:
                     evt_type = sieve_evt.get("type")
-                    if evt_type == "content":
-                        text_part = sieve_evt.get("text", "")
-                        if on_delta is not None and text_part:
-                            await on_delta(evt, text_part, None)
-                            sieve_content_emitted = True
-                    elif evt_type == "tool_calls_start":
+                    if evt_type == "tool_calls_start":
                         sieve_intercepted = True
                         calls = sieve_evt.get("calls", [])
                         if on_delta is not None and calls:
@@ -807,7 +801,7 @@ async def collect_completion_run(
                     if blocked_tool_names:
                         return _finalize_result(reason=f"blocked_tool_name:{blocked_tool_names[0]}")
 
-            if on_delta is not None and (not tool_sieve or (not sieve_content_emitted and not sieve_intercepted)):
+            if on_delta is not None and not sieve_intercepted:
                 await on_delta(evt, content, None)
 
             if request.tools:
