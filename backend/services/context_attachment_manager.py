@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Any
 
 from backend.core.upstream_file_cache import UpstreamFileCacheEntry
 from backend.services.context_offload import SYSTEM_CONTEXT_FILE_PREFIX, SYSTEM_CONTEXT_PROMPT_NOTE
+
+log = logging.getLogger(__name__)
 
 
 def derive_session_key(surface: str, auth_token: str, payload: dict[str, Any]) -> str:
@@ -117,7 +120,13 @@ async def prepare_context_attachments(*, app, payload: dict[str, Any], surface: 
                 await affinity.add_uploaded_file(session_key, remote)
                 await file_store.delete_path(local_meta["path"])
                 local_file_records.append(local_meta)
-    except Exception:
+    except Exception as exc:
+        log.exception(
+            "[Attachment] 上传到上游失败，已降级为 inline 文本提示: session=%s surface=%s error=%r",
+            session_key,
+            surface,
+            exc,
+        )
         account_pool.release(acc)
         fallback_payload = dict(payload)
         summary_parts: list[str] = []
