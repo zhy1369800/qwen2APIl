@@ -125,6 +125,10 @@ class UpstreamFileUploader:
         user_id = file_path_remote.split('/', 1)[0] if '/' in file_path_remote else ""
         now_ms = int(time.time() * 1000)
         put_url = f"https://{bucketname}.{endpoint}/{file_path_remote.lstrip('/')}"
+        try:
+            signed_get_url = bucket.sign_url("GET", file_path_remote, 3600)
+        except Exception:
+            signed_get_url = put_url
         remote_ref = {
             "type": "file",
             "file": {
@@ -143,7 +147,7 @@ class UpstreamFileUploader:
                 "update_at": now_ms,
             },
             "id": file_id,
-            "url": put_url,
+            "url": signed_get_url,
             "name": filename,
             "collection_name": "",
             "progress": 0,
