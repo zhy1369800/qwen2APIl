@@ -143,6 +143,23 @@ def _build_metadata_stream_chunk(
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _build_content_stream_chunk(
+    *,
+    completion_id: str,
+    created: int,
+    model_name: str,
+    content: str,
+) -> str:
+    payload = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model_name,
+        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+    }
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 @router.post("/chat/completions")
 @router.post("/v1/chat/completions")
 async def chat_completions(request: Request):
@@ -339,6 +356,19 @@ async def chat_completions(request: Request):
                                         metadata=stream_metadata,
                                     )
                                 )
+                            # 兜底：部分客户端不解析 delta.metadata，追加 markdown 图片链接到 content。
+                            if stream_images:
+                                first_image_url = stream_images[0].get("url", "").strip()
+                                if first_image_url:
+                                    fallback_md = f"\n\n![generated image]({first_image_url})"
+                                    await queue.put(
+                                        _build_content_stream_chunk(
+                                            completion_id=completion_id,
+                                            created=created,
+                                            model_name=model_name,
+                                            content=fallback_md,
+                                        )
+                                    )
                             final_finish_reason = "tool_calls" if directive.stop_reason == "tool_use" else execution.state.finish_reason
                             for chunk in translator.finalize(final_finish_reason):
                                 await queue.put(chunk)
@@ -424,6 +454,18 @@ async def chat_completions(request: Request):
                         payload["choices"][0]["message"]["metadata"] = metadata
                     except Exception:
                         pass
+                # 兜底：非流式也把首张图链接追加到文本，兼容不读 metadata 的客户端。
+                if images:
+                    first_image_url = images[0].get("url", "").strip()
+                    if first_image_url:
+                        try:
+                            msg = payload["choices"][0]["message"]
+                            base_content = msg.get("content", "")
+                            if not isinstance(base_content, str):
+                                base_content = str(base_content)
+                            msg["content"] = f"{base_content}\n\n![generated image]({first_image_url})"
+                        except Exception:
+                            pass
                 return JSONResponse(payload)
         except Exception as e:
             await clear_invalidated_session_chat(app=app, request=standard_request)
