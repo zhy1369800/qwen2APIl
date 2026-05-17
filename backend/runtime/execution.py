@@ -414,6 +414,8 @@ async def collect_completion_run(
     native_fn_ignored_name = None
     last_fn_args_len = 0
     native_fn_id = None
+    native_fn_args_closed = False
+    native_fn_name = None
 
     # 初始化 Tool Sieve 用于实时检测
     tool_sieve = None
@@ -614,6 +616,7 @@ async def collect_completion_run(
                         # return _finalize_result(reason=f"ignored_native_fn:{qwen_name}", explicit_blocked_tool=qwen_name)
                     else:
                         native_fn_emitted = True
+                        native_fn_name = qwen_name
                         import uuid
                         native_fn_id = f"toolu_{uuid.uuid4().hex[:8]}"
                         await on_delta(evt, None, [{"type": "tool_call_stream_start", "id": native_fn_id, "name": qwen_name}])
@@ -626,7 +629,7 @@ async def collect_completion_run(
                     
                     # 关键：检测 JSON 是否闭合，立刻 return 触发 finalize("tool_calls")
                     # 避免等待 100s 的上游流结束后才给客户端发 finish_reason
-                    if args_str.strip():
+                    if args_str.strip() and not native_fn_args_closed:
                         depth = 0
                         max_depth = 0
                         for ch in args_str:
@@ -645,12 +648,12 @@ async def collect_completion_run(
                             completed_call = {
                                 "type": "tool_use",
                                 "id": native_fn_id,
-                                "name": qwen_name,
+                                "name": native_fn_name or qwen_name,
                                 "input": args_obj,
                             }
                             native_tool_calls.append(completed_call)
-                            log.info("[Collect] ✓ 原生 function_call 参数闭合，提前 return: tool=%s", qwen_name)
-                            return _finalize_result(reason="native_fn_args_complete")
+                            native_fn_args_closed = True
+                            log.info("[Collect] ✓ 原生 function_call 参数闭合，继续收流: tool=%s", native_fn_name or qwen_name)
             # --- END NATIVE FUNCTION_CALL STREAMING ---
 
         if phase in ("think", "thinking_summary"):
