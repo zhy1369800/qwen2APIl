@@ -427,10 +427,12 @@ class OpenAIStreamTranslator:
                     self.emit_tool_calls(tool_calls)
                     final_finish_reason = "tool_calls"
             elif buffered_text and not has_tool_marker and finish_reason != "tool_calls":
-                # 只有确认不含工具调用标记时才以普通文本发出
-                self._emit_content_chunk(buffered_text)
+                # 只有确认不含工具调用与幻觉结果时才以普通文本发出
+                if "[tool result]" not in lowered_buffered_text and "##tool_call" not in lowered_buffered_text:
+                    self._emit_content_chunk(buffered_text)
         elif buffered_text and not self.tool_calls_emitted and not has_tool_marker and finish_reason != "tool_calls":
-            self._emit_content_chunk(buffered_text)
+            if "[tool result]" not in lowered_buffered_text and "##tool_call" not in lowered_buffered_text:
+                self._emit_content_chunk(buffered_text)
 
         chunks = self.drain_chunks()
         chunks.append(
