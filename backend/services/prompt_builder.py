@@ -480,7 +480,7 @@ def _compact_tool_result_body(body: str, *, limit: int = 8000, head: int = 3000,
     return f"{body[:head]}\n...[truncated {dropped} bytes from middle]...\n{body[-tail:]}"
 
 
-def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, client_profile: str = OPENCLAW_OPENAI_PROFILE, native_fc_enabled: bool = False) -> str:
+def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, client_profile: str = OPENCLAW_OPENAI_PROFILE, native_fc_enabled: bool = False, available_skills: str = "") -> str:
     # 截断历史时必须保留：system 消息 + 首条 user 消息（原始任务）+ 最近 N 轮
     # 否则模型丢失原始目标，在多步 tool_use 后会失去方向（典型症状：吐 "YES." 结束）
     MAX_HISTORY_TURNS = 15  # 最近 15 轮 = 30 条消息。浏览器/长工具链场景下 5 轮不够用，会"失忆重来"
@@ -679,6 +679,8 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
         parts.append(sys_part)
     if tools_part:
         parts.append(tools_part)
+    if available_skills:
+        parts.append(available_skills)
 
     # Namespace-based few-shot：让模型学会调用所有类别工具
     if tools and client_profile == CLAUDE_CODE_OPENAI_PROFILE:
@@ -917,9 +919,84 @@ def _apply_topic_isolation(messages: list, client_profile: str) -> list:
     return isolated
 
 
+def _extract_available_skills(req_data: dict, client_profile: str) -> str:
+    """从请求数据中提取包含 <available_skills>...</available_skills> 的内容。"""
+    texts_to_search = []
+    
+    sys_field = req_data.get("system", "")
+    if isinstance(sys_field, list):
+        for p in sys_field:
+            if isinstance(p, dict) and p.get("text"):
+                texts_to_search.append(p["text"])
+    elif isinstance(sys_field, str) and sys_field:
+        texts_to_search.append(sys_field)
+        
+    raw_messages = req_data.get("messages", [])
+    for msg in raw_messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            texts_to_search.append(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text" and part.get("text"):
+                        texts_to_search.append(part["text"])
+                    elif "text" in part and isinstance(part["text"], str):
+                        texts_to_search.append(part["text"])
+
+    pattern = re.compile(r"(<available_skills>.*?</available_skills>)", re.DOTALL)
+    for text in texts_to_search:
+        match = pattern.search(text)
+        if match:
+            return match.group(1).strip()
+            
+    return ""
+
+
+def _strip_available_skills_from_text(text: str) -> str:
+    """剥离字符串中的 <available_skills>...</available_skills> 块。"""
+    if not text:
+        return text
+    pattern = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
+    return pattern.sub("", text).strip()
+
+
+def _strip_available_skills_from_messages(messages: list) -> list:
+    """对 messages 列表中的每一项进行复制并剥离其中的 <available_skills> 块。"""
+    out_messages = []
+    for msg in messages:
+        if not isinstance(msg, dict):
+            out_messages.append(msg)
+            continue
+        
+        new_msg = dict(msg)
+        content = msg.get("content")
+        if isinstance(content, str):
+            new_msg["content"] = _strip_available_skills_from_text(content)
+        elif isinstance(content, list):
+            new_content = []
+            for part in content:
+                if isinstance(part, dict):
+                    new_part = dict(part)
+                    if "text" in part and isinstance(part["text"], str):
+                        new_part["text"] = _strip_available_skills_from_text(part["text"])
+                    new_content.append(new_part)
+                else:
+                    new_content.append(part)
+            new_msg["content"] = new_content
+        out_messages.append(new_msg)
+    return out_messages
+
+
 def messages_to_prompt(req_data: dict, *, client_profile: str = OPENCLAW_OPENAI_PROFILE, native_fc_enabled: bool = False) -> PromptBuildResult:
     resolved_client_profile = client_profile
     raw_messages = req_data.get("messages", [])
+    
+    # 提取 <available_skills> 块
+    available_skills = _extract_available_skills(req_data, resolved_client_profile)
+    
     # 话题隔离：新任务与历史首条 user 实体零重合时，丢弃所有历史，只保留 system + 最新 user。
     # 这解决 Claude Code 同 session 多任务时旧对话干扰新任务的问题。
     isolated = _apply_topic_isolation(raw_messages, resolved_client_profile)
@@ -929,6 +1006,10 @@ def messages_to_prompt(req_data: dict, *, client_profile: str = OPENCLAW_OPENAI_
         log.info(f"[拒绝清洗] 替换了 {cleaned_count} 条 assistant 拒绝消息")
     # Pass: 文件缓存回填
     messages = _resolve_cache_hints(cleaned_messages)
+    
+    # 从消息历史中剥离 <available_skills> 块，防止多轮历史重复或因截断丢失
+    messages = _strip_available_skills_from_messages(messages)
+    
     tools = _normalize_tools(req_data.get("tools", []))
     # 自动提升：如果外部没传 native_fc_enabled 但有 tools，则自动判定为需要精简提示词
     if not native_fc_enabled and tools:
@@ -946,8 +1027,20 @@ def messages_to_prompt(req_data: dict, *, client_profile: str = OPENCLAW_OPENAI_
             if msg.get("role") == "system":
                 system_prompt = _extract_text(msg.get("content", ""), client_profile=client_profile)
                 break
+                
+    # 剥离 system_prompt 中包含的 <available_skills> 块
+    if system_prompt:
+        system_prompt = _strip_available_skills_from_text(system_prompt)
+        
     return PromptBuildResult(
-        prompt=build_prompt_with_tools(system_prompt, messages, tools, client_profile=client_profile, native_fc_enabled=native_fc_enabled),
+        prompt=build_prompt_with_tools(
+            system_prompt,
+            messages,
+            tools,
+            client_profile=client_profile,
+            native_fc_enabled=native_fc_enabled,
+            available_skills=available_skills,
+        ),
         tools=tools,
         tool_enabled=tool_enabled,
     )
