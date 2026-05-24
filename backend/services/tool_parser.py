@@ -489,6 +489,8 @@ class ToolSieve:
         self.capturing = False
         self.pending_tool_calls = []
         self.tool_calls_detected = False
+        self.args_is_quoted_string = False
+        self.has_skipped_first_quote = False
 
     def process_chunk(self, chunk: str) -> list[dict]:
         """
@@ -556,10 +558,21 @@ class ToolSieve:
                     m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
                     if m_input:
                         args_start_str = m_input.group(1)
+                        # 检测是否是以双引号包裹的字符串形式的 JSON
+                        cleaned_start = args_start_str.lstrip()
+                        if cleaned_start.startswith('"'):
+                            self.args_is_quoted_string = True
+                        
                         clean_args = ""
                         for ch in args_start_str:
                             if self.stream_brace_depth == 0 and ch not in "{[\"":
                                 continue
+                            
+                            # 如果是双引号包裹的 JSON，且是第一个双引号，跳过它
+                            if self.args_is_quoted_string and ch == '"' and self.stream_brace_depth == 0 and not self.has_skipped_first_quote:
+                                self.has_skipped_first_quote = True
+                                continue
+                                
                             clean_args += ch
                             if ch in "{[":
                                 self.stream_brace_depth += 1
@@ -570,10 +583,15 @@ class ToolSieve:
                                     break
                                     
                         if clean_args and not getattr(self, "stream_ignored", False):
-                            events.append({
-                                "type": "tool_calls_chunk",
-                                "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
-                            })
+                            if self.args_is_quoted_string:
+                                clean_args = clean_args.replace('\\"', '"')
+                                if self.stream_completed and clean_args.endswith('"'):
+                                    clean_args = clean_args[:-1]
+                            if clean_args:
+                                events.append({
+                                    "type": "tool_calls_chunk",
+                                    "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
+                                })
             elif not getattr(self, "stream_completed", False):
                 clean_args = ""
                 for ch in chunk:
@@ -589,10 +607,15 @@ class ToolSieve:
                             break
                             
                 if clean_args and not getattr(self, "stream_ignored", False):
-                    events.append({
-                        "type": "tool_calls_chunk",
-                        "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
-                    })
+                    if self.args_is_quoted_string:
+                        clean_args = clean_args.replace('\\"', '"')
+                        if self.stream_completed and clean_args.endswith('"'):
+                            clean_args = clean_args[:-1]
+                    if clean_args:
+                        events.append({
+                            "type": "tool_calls_chunk",
+                            "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
+                        })
             # --- END INCREMENTAL STREAMING LOGIC ---
 
             # 尝试解析
