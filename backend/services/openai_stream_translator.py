@@ -279,6 +279,14 @@ class OpenAIStreamTranslator:
     def on_delta(self, evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
         self._ensure_role_chunk()
 
+        if tool_calls:
+            import logging as _logging
+            _logging.getLogger("qwen2api.translator").info(
+                "[DEBUG-TRANSLATOR] 接收到 tool_calls=%r, evt.fc=%r",
+                tool_calls,
+                evt.get("function_call")
+            )
+
         phase = evt.get("phase")
         status = evt.get("status")
 

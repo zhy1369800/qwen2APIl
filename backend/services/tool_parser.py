@@ -491,6 +491,8 @@ class ToolSieve:
         self.tool_calls_detected = False
         self.args_is_quoted_string = False
         self.has_skipped_first_quote = False
+        self.stream_active = False
+        self.args_started = False
 
     def process_chunk(self, chunk: str) -> list[dict]:
         """
@@ -510,7 +512,7 @@ class ToolSieve:
             self.capture += chunk
             self.pending = ""
 
-            # --- START INCREMENTAL STREAMING LOGIC ---
+            # 1. 识别工具名并激活流式
             if not getattr(self, "stream_active", False):
                 m_name = re.search(r'"name"\s*:\s*"([^"]+)"', self.capture)
                 xml_invoke_name = None
@@ -554,49 +556,56 @@ class ToolSieve:
                             "calls": [{"type": "tool_call_stream_start", "id": self.stream_tool_id, "name": self.stream_tool_name}]
                         })
 
-                    # JSON 风格参数流式增量；XML 风格只发 start，最终由 flush/parse 产出完整 tool_calls。
-                    m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
-                    if m_input:
-                        args_start_str = m_input.group(1)
-                        # 检测是否是以双引号包裹的字符串形式的 JSON
-                        cleaned_start = args_start_str.lstrip()
-                        if cleaned_start.startswith('"'):
-                            self.args_is_quoted_string = True
+            # 2. 定位并提取 arguments 的开始
+            if getattr(self, "stream_active", False) and not getattr(self, "args_started", False):
+                m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
+                if m_input:
+                    self.args_started = True
+                    args_start_str = m_input.group(1)
+                    cleaned_start = args_start_str.lstrip()
+                    if cleaned_start.startswith('"'):
+                        self.args_is_quoted_string = True
+                    
+                    clean_args = ""
+                    for ch in args_start_str:
+                        if self.stream_brace_depth == 0 and ch not in "{[\"":
+                            continue
                         
-                        clean_args = ""
-                        for ch in args_start_str:
-                            if self.stream_brace_depth == 0 and ch not in "{[\"":
-                                continue
+                        if self.args_is_quoted_string and ch == '"' and self.stream_brace_depth == 0 and not self.has_skipped_first_quote:
+                            self.has_skipped_first_quote = True
+                            continue
                             
-                            # 如果是双引号包裹的 JSON，且是第一个双引号，跳过它
-                            if self.args_is_quoted_string and ch == '"' and self.stream_brace_depth == 0 and not self.has_skipped_first_quote:
-                                self.has_skipped_first_quote = True
-                                continue
+                        clean_args += ch
+                        if ch in "{[":
+                            self.stream_brace_depth += 1
+                        elif ch in "}]":
+                            self.stream_brace_depth -= 1
+                            if self.stream_brace_depth == 0:
+                                self.stream_completed = True
+                                break
                                 
-                            clean_args += ch
-                            if ch in "{[":
-                                self.stream_brace_depth += 1
-                            elif ch in "}]":
-                                self.stream_brace_depth -= 1
-                                if self.stream_brace_depth == 0:
-                                    self.stream_completed = True
-                                    break
-                                    
-                        if clean_args and not getattr(self, "stream_ignored", False):
-                            if self.args_is_quoted_string:
-                                clean_args = clean_args.replace('\\"', '"')
-                                if self.stream_completed and clean_args.endswith('"'):
-                                    clean_args = clean_args[:-1]
-                            if clean_args:
-                                events.append({
-                                    "type": "tool_calls_chunk",
-                                    "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
-                                })
-            elif not getattr(self, "stream_completed", False):
+                    if clean_args and not getattr(self, "stream_ignored", False):
+                        if self.args_is_quoted_string:
+                            clean_args = clean_args.replace('\\"', '"')
+                            if self.stream_completed and clean_args.endswith('"'):
+                                clean_args = clean_args[:-1]
+                        if clean_args:
+                            events.append({
+                                "type": "tool_calls_chunk",
+                                "calls": [{"type": "tool_call_stream_chunk", "arguments": clean_args}]
+                            })
+
+            # 3. 提取 arguments 的后续增量
+            elif getattr(self, "stream_active", False) and getattr(self, "args_started", False) and not getattr(self, "stream_completed", False):
                 clean_args = ""
                 for ch in chunk:
                     if self.stream_brace_depth == 0 and ch not in "{[\"":
                         continue
+                    
+                    if self.args_is_quoted_string and ch == '"' and self.stream_brace_depth == 0 and not self.has_skipped_first_quote:
+                        self.has_skipped_first_quote = True
+                        continue
+                        
                     clean_args += ch
                     if ch in "{[":
                         self.stream_brace_depth += 1

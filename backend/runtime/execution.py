@@ -625,23 +625,37 @@ async def collect_completion_run(
                         await _ensure_reasoning_closed()
                 
                 if native_fn_emitted and len(args_str) > last_fn_args_len:
-                    args_delta = args_str[last_fn_args_len:]
-                    last_fn_args_len = len(args_str)
-                    await on_delta(evt, None, [{"type": "tool_call_stream_chunk", "arguments": args_delta}])
-                    
-                    # 关键：检测 JSON 是否闭合，立刻 return 触发 finalize("tool_calls")
-                    # 避免等待 100s 的上游流结束后才给客户端发 finish_reason
+                    # 关键：检测 JSON 是否闭合，如果闭合则物理截断后缀多余垃圾字符，立刻 return
                     if args_str.strip() and not native_fn_args_closed:
                         depth = 0
                         max_depth = 0
-                        for ch in args_str:
+                        closing_idx = -1
+                        for idx, ch in enumerate(args_str):
                             if ch in "{[":
                                 depth += 1
                                 if depth > max_depth:
                                     max_depth = depth
                             elif ch in "}]":
                                 depth -= 1
-                        if max_depth > 0 and depth <= 0:
+                                if max_depth > 0 and depth <= 0:
+                                    closing_idx = idx
+                                    break
+                        
+                        if closing_idx != -1:
+                            # 发生闭合！截断垃圾后缀
+                            log.info("[DEBUG-CLOSE] 发现原生参数闭合! closing_idx=%d, 原始 args_str 尾部=%r", closing_idx, args_str[-30:])
+                            args_str = args_str[:closing_idx + 1]
+                            args_delta = args_str[last_fn_args_len:]
+                            log.info("[DEBUG-CLOSE] 截断后 args_str 长度=%d, 干净 args_delta=%r", len(args_str), args_delta)
+                            last_fn_args_len = len(args_str)
+                            
+                            # 物理重写 evt 字典，彻底净化源头
+                            if evt.get("function_call"):
+                                evt["function_call"]["arguments"] = args_str
+                                
+                            if args_delta:
+                                await on_delta(evt, None, [{"type": "tool_call_stream_chunk", "arguments": args_delta}])
+                            
                             try:
                                 import json as _json
                                 args_obj = _json.loads(args_str)
@@ -657,6 +671,12 @@ async def collect_completion_run(
                             native_fn_args_closed = True
                             log.info("[Collect] ✓ 原生 function_call 参数闭合，提前结束收流: tool=%s", native_fn_name or qwen_name)
                             return _finalize_result(reason="native_fn_args_closed")
+
+                    # 未闭合或降级走此，正常计算增量输出
+                    args_delta = args_str[last_fn_args_len:]
+                    last_fn_args_len = len(args_str)
+                    if args_delta:
+                        await on_delta(evt, None, [{"type": "tool_call_stream_chunk", "arguments": args_delta}])
             # --- END NATIVE FUNCTION_CALL STREAMING ---
 
         if phase in ("think", "thinking_summary"):
