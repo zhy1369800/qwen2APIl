@@ -59,6 +59,72 @@ class RuntimeExecutionResult:
     acc: Any | None
 
 
+class ToolResultFilter:
+    """过滤大模型在输出时自己幻觉生成的 [Tool Result] 块。"""
+    def __init__(self) -> None:
+        self.in_block = False
+        self.buffer = ""
+        self.start_marker = "[tool result"
+        self.end_marker = "[/tool result]"
+
+    def process_chunk(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self.buffer += chunk
+        output = ""
+
+        while self.buffer:
+            if not self.in_block:
+                lower_buf = self.buffer.lower()
+                start_idx = lower_buf.find(self.start_marker)
+                if start_idx != -1:
+                    output += self.buffer[:start_idx]
+                    self.buffer = self.buffer[start_idx:]
+                    self.in_block = True
+                else:
+                    max_overlap = 0
+                    for i in range(1, min(len(self.buffer), len(self.start_marker)) + 1):
+                        suffix = lower_buf[-i:]
+                        if self.start_marker.startswith(suffix):
+                            max_overlap = i
+
+                    if max_overlap > 0:
+                        output += self.buffer[:-max_overlap]
+                        self.buffer = self.buffer[-max_overlap:]
+                        break
+                    else:
+                        output += self.buffer
+                        self.buffer = ""
+            else:
+                lower_buf = self.buffer.lower()
+                end_idx = lower_buf.find(self.end_marker)
+                if end_idx != -1:
+                    self.buffer = self.buffer[end_idx + len(self.end_marker):]
+                    self.in_block = False
+                else:
+                    max_overlap = 0
+                    for i in range(1, min(len(self.buffer), len(self.end_marker)) + 1):
+                        suffix = lower_buf[-i:]
+                        if self.end_marker.startswith(suffix):
+                            max_overlap = i
+
+                    if max_overlap > 0:
+                        self.buffer = self.buffer[-max_overlap:]
+                        break
+                    else:
+                        self.buffer = ""
+        return output
+
+    def flush(self) -> str:
+        if self.in_block:
+            self.buffer = ""
+            return ""
+        else:
+            res = self.buffer
+            self.buffer = ""
+            return res
+
+
 @dataclass(slots=True)
 class RuntimeToolDirective:
     tool_blocks: list[dict[str, Any]] = field(default_factory=list)
@@ -407,6 +473,8 @@ async def collect_completion_run(
     metrics = StreamMetrics()
     last_function_call = None
     last_thinking_summary_text = ""  # Qwen 的 thinking_summary 是全量覆盖，需要 diff 出增量
+    tool_result_filter = ToolResultFilter()
+    last_event = None
 
     # Native function_call streaming state
     native_fn_emitted = False
@@ -576,6 +644,7 @@ async def collect_completion_run(
             continue
 
         evt = item.get("event", {})
+        last_event = evt
         if capture_events:
             raw_events.append(evt)
         if evt.get("type") != "delta":
@@ -706,7 +775,10 @@ async def collect_completion_run(
 
 
         if phase == "answer" and content:
-            answer_fragments.append(content)
+            filtered_content = tool_result_filter.process_chunk(content)
+            if not filtered_content:
+                continue
+            answer_fragments.append(filtered_content)
 
             # 毒性拒绝早期拦截：Qwen 偶尔幻觉出 "Tool X does not exists." 之类文本。
             # 在标记 emitted_visible_output 之前识别并提前 finalize，让 evaluate_retry_directive
@@ -734,7 +806,7 @@ async def collect_completion_run(
             # Tool Sieve 实时检测
             sieve_intercepted = False
             if tool_sieve:
-                sieve_events = tool_sieve.process_chunk(content)
+                sieve_events = tool_sieve.process_chunk(filtered_content)
                 if getattr(tool_sieve, "capturing", False):
                     sieve_intercepted = True
                 for sieve_evt in sieve_events:
@@ -837,7 +909,7 @@ async def collect_completion_run(
                         return _finalize_result(reason=f"blocked_tool_name:{blocked_tool_names[0]}")
 
             if on_delta is not None and not sieve_intercepted:
-                await on_delta(evt, content, None)
+                await on_delta(evt, filtered_content, None)
 
             if request.tools:
                 if "##TOOL_CALL##" in answer_text or "<tool_call>" in answer_text:
@@ -862,6 +934,13 @@ async def collect_completion_run(
                 if on_delta is not None:
                     await on_delta(evt, None, completed_calls)
                 return _finalize_result(reason="native_tool_use")
+
+    # 刷新 ToolResultFilter 剩余内容
+    final_flush = tool_result_filter.flush()
+    if final_flush:
+        answer_fragments.append(final_flush)
+        if on_delta is not None:
+            await on_delta(last_event or {"phase": "answer"}, final_flush, None)
 
     # 如果 function_call 的参数没有闭合就到了 stream_end，仍然尝试组装工具调用
     if native_fn_emitted and last_function_call and not native_tool_calls:
