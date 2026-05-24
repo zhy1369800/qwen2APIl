@@ -348,6 +348,49 @@ def parse_bracket_tool_call(text: str) -> dict | None:
     return {"name": name, "input": inputs, "start": m.start(), "end": m.end()}
 
 
+def parse_xml_tool_code(text: str) -> dict | None:
+    m = re.search(r'<tool_code>\s*(.*?)\s*</tool_code>', text, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return None
+    content = m.group(1).strip()
+    
+    # 匹配 function_name(...) 形式
+    fn_match = re.match(r'^([A-Za-z0-9_.-]+)\s*\((.*)\)$', content, re.DOTALL)
+    if not fn_match:
+        return None
+    name = fn_match.group(1)
+    args_str = fn_match.group(2).strip()
+    
+    # 匹配 key = value 键值对
+    # 支持带引号的字符串参数以及数字、布尔、None 值
+    kv_pattern = r'([A-Za-z0-9_.-]+)\s*=\s*("[^"\\]*(?:\\.[^"\\]*)*"|\'[^\'\\]*(?:\\.[^\'\\]*)*\'|[^\s,]+)'
+    pairs = re.findall(kv_pattern, args_str)
+    
+    inputs = {}
+    for k, v in pairs:
+        v = v.strip()
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v_content = v[1:-1]
+            # 简单的反转义
+            v_content = v_content.replace('\\"', '"').replace("\\'", "'").replace('\\n', '\n').replace('\\t', '\t')
+            inputs[k] = v_content
+        else:
+            if v.lower() == 'true':
+                inputs[k] = True
+            elif v.lower() == 'false':
+                inputs[k] = False
+            elif v.lower() == 'none':
+                inputs[k] = None
+            elif v.isdigit():
+                inputs[k] = int(v)
+            else:
+                try:
+                    inputs[k] = float(v)
+                except ValueError:
+                    inputs[k] = v
+    return {"name": name, "input": inputs, "start": m.start(), "end": m.end()}
+
+
 def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
     answer = _normalize_fragmented_tool_call(answer)
     ctx = get_request_context()
@@ -401,6 +444,15 @@ def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
         prefix = answer[:bracket_call["start"]].strip()
         if emit_logs:
             log.info(f"[ToolParse] [{req_tag}] ✓ Bracket格式 [Tool Call]: name={name!r}, input={str(inp)[:120]}")
+        return _make_tool_block(name, inp, prefix)
+
+    xml_tool_code = parse_xml_tool_code(answer)
+    if xml_tool_code:
+        name = xml_tool_code["name"]
+        inp = xml_tool_code["input"]
+        prefix = answer[:xml_tool_code["start"]].strip()
+        if emit_logs:
+            log.info(f"[ToolParse] [{req_tag}] ✓ XML格式 <tool_code>: name={name!r}, input={str(inp)[:120]}")
         return _make_tool_block(name, inp, prefix)
 
     detailed = parse_tool_calls_detailed(answer, tool_names)
@@ -552,6 +604,7 @@ class ToolSieve:
                 m_name = re.search(r'"name"\s*:\s*"([^"]+)"', self.capture)
                 xml_invoke_name = None
                 xml_function_name = None
+                xml_tool_code_name = None
                 if not m_name:
                     m_invoke = re.search(r"<invoke\s+name=\"([^\"]+)\"", self.capture, re.IGNORECASE)
                     if m_invoke:
@@ -560,25 +613,26 @@ class ToolSieve:
                         m_function = re.search(r"<function=([A-Za-z0-9_.:-]+)\s*>", self.capture, re.IGNORECASE)
                         if m_function:
                             xml_function_name = m_function.group(1)
+                        else:
+                            m_tool_code = re.search(r"<tool_code>\s*([A-Za-z0-9_.-]+)", self.capture, re.IGNORECASE)
+                            if m_tool_code:
+                                xml_tool_code_name = m_tool_code.group(1)
                 if m_name:
                     raw_name = m_name.group(1)
-                    from backend.services.tool_name_obfuscation import from_qwen_name
-                    from backend.toolcall.normalize import normalize_tool_name
-                    self.stream_tool_name = normalize_tool_name(from_qwen_name(raw_name), self.tool_names)
-                elif xml_invoke_name or xml_function_name:
-                    raw_name = xml_invoke_name or xml_function_name
-                    from backend.services.tool_name_obfuscation import from_qwen_name
-                    from backend.toolcall.normalize import normalize_tool_name
-                    self.stream_tool_name = normalize_tool_name(from_qwen_name(raw_name), self.tool_names)
+                elif xml_invoke_name or xml_function_name or xml_tool_code_name:
+                    raw_name = xml_invoke_name or xml_function_name or xml_tool_code_name
                 else:
                     raw_name = None
                     
                 if raw_name:
+                    from backend.services.tool_name_obfuscation import from_qwen_name
+                    from backend.toolcall.normalize import normalize_tool_name
+                    self.stream_tool_name = normalize_tool_name(from_qwen_name(raw_name), self.tool_names)
                     self.stream_active = True
                     self.stream_brace_depth = 0
                     self.stream_completed = False
                     
-                    if self.tool_names and self.stream_tool_name not in self.tool_names:
+                    if xml_tool_code_name or (self.tool_names and self.stream_tool_name not in self.tool_names):
                         self.stream_ignored = True
                     else:
                         self.stream_ignored = False
@@ -662,6 +716,11 @@ class ToolSieve:
                         })
             # --- END INCREMENTAL STREAMING LOGIC ---
 
+            # 针对 tool_code 的闭合检测
+            if getattr(self, "stream_active", False) and not getattr(self, "stream_completed", False):
+                if "</tool_code>" in self.capture.lower():
+                    self.stream_completed = True
+
             # 尝试解析
             prefix, calls, suffix, ready = self._consume_tool_capture()
 
@@ -715,6 +774,7 @@ class ToolSieve:
             '{"tool_calls"',
             '{"name":',
             '<tool_call>',
+            '<tool_code>',
             '<invoke name=',
             '<function=',
             '##TOOL_CALL##',
@@ -813,7 +873,7 @@ class ToolSieve:
 
     def _looks_like_incomplete_tool_call(self, text: str) -> bool:
         """检查文本是否看起来像不完整的工具调用"""
-        markers = ['{"tool_calls"', '{"name":', '<tool_call>', '<invoke name=', '<function=', '##TOOL_CALL##', 'function.name:']
+        markers = ['{"tool_calls"', '{"name":', '<tool_call>', '<tool_code>', '<tool_code', '<invoke name=', '<function=', '##TOOL_CALL##', 'function.name:']
         return any(marker in text for marker in markers)
 
     def has_tool_calls(self) -> bool:

@@ -125,6 +125,103 @@ class ToolResultFilter:
             return res
 
 
+class AntThinkingFilter:
+    """过滤并提取大模型输出中的思维链标签（如 <antThinking> 或 <think>），并将其分流。"""
+    def __init__(self) -> None:
+        self.in_block = False
+        self.buffer = ""
+        self.start_markers = ["<antthinking>", "<think>"]
+        self.end_markers = ["</antthinking>", "</think>"]
+
+    def process_chunk(self, chunk: str) -> list[tuple[str, str]]:
+        if not chunk:
+            return []
+        self.buffer += chunk
+        output = []
+
+        while self.buffer:
+            lower_buf = self.buffer.lower()
+            if not self.in_block:
+                first_start_idx = -1
+                first_marker = None
+                for marker in self.start_markers:
+                    idx = lower_buf.find(marker)
+                    if idx != -1:
+                        if first_start_idx == -1 or idx < first_start_idx:
+                            first_start_idx = idx
+                            first_marker = marker
+                
+                if first_start_idx != -1:
+                    text_before = self.buffer[:first_start_idx]
+                    if text_before:
+                        output.append(("answer", text_before))
+                    self.buffer = self.buffer[first_start_idx + len(first_marker):]
+                    self.in_block = True
+                else:
+                    max_overlap = 0
+                    for marker in self.start_markers:
+                        for i in range(1, min(len(self.buffer), len(marker)) + 1):
+                            suffix = lower_buf[-i:]
+                            if marker.startswith(suffix):
+                                if i > max_overlap:
+                                    max_overlap = i
+                    
+                    if max_overlap > 0:
+                        text_safe = self.buffer[:-max_overlap]
+                        if text_safe:
+                            output.append(("answer", text_safe))
+                        self.buffer = self.buffer[-max_overlap:]
+                        break
+                    else:
+                        output.append(("answer", self.buffer))
+                        self.buffer = ""
+            else:
+                first_end_idx = -1
+                first_marker = None
+                for marker in self.end_markers:
+                    idx = lower_buf.find(marker)
+                    if idx != -1:
+                        if first_end_idx == -1 or idx < first_end_idx:
+                            first_end_idx = idx
+                            first_marker = marker
+                
+                if first_end_idx != -1:
+                    thinking_before = self.buffer[:first_end_idx]
+                    if thinking_before:
+                        output.append(("thinking_summary", thinking_before))
+                    self.buffer = self.buffer[first_end_idx + len(first_marker):]
+                    self.in_block = False
+                else:
+                    max_overlap = 0
+                    for marker in self.end_markers:
+                        for i in range(1, min(len(self.buffer), len(marker)) + 1):
+                            suffix = lower_buf[-i:]
+                            if marker.startswith(suffix):
+                                if i > max_overlap:
+                                    max_overlap = i
+                                    
+                    if max_overlap > 0:
+                        thinking_safe = self.buffer[:-max_overlap]
+                        if thinking_safe:
+                            output.append(("thinking_summary", thinking_safe))
+                        self.buffer = self.buffer[-max_overlap:]
+                        break
+                    else:
+                        output.append(("thinking_summary", self.buffer))
+                        self.buffer = ""
+        return output
+
+    def flush(self) -> list[tuple[str, str]]:
+        output = []
+        if self.buffer:
+            if self.in_block:
+                output.append(("thinking_summary", self.buffer))
+            else:
+                output.append(("answer", self.buffer))
+            self.buffer = ""
+        return output
+
+
 @dataclass(slots=True)
 class RuntimeToolDirective:
     tool_blocks: list[dict[str, Any]] = field(default_factory=list)
@@ -474,6 +571,7 @@ async def collect_completion_run(
     last_function_call = None
     last_thinking_summary_text = ""  # Qwen 的 thinking_summary 是全量覆盖，需要 diff 出增量
     tool_result_filter = ToolResultFilter()
+    ant_thinking_filter = AntThinkingFilter()
     last_event = None
 
     # Native function_call streaming state
@@ -775,152 +873,173 @@ async def collect_completion_run(
 
 
         if phase == "answer" and content:
-            filtered_content = tool_result_filter.process_chunk(content)
-            if not filtered_content:
-                continue
-            answer_fragments.append(filtered_content)
+            ant_events = ant_thinking_filter.process_chunk(content)
+            for ant_type, ant_val in ant_events:
+                if ant_type == "thinking_summary":
+                    reasoning_fragments.append(ant_val)
+                    emitted_visible_output = True
+                    if not first_event_marked:
+                        metrics.mark("first_event", float(len(raw_events)))
+                        first_event_marked = True
+                    if on_delta is not None:
+                        synthetic_evt = dict(evt)
+                        synthetic_evt["phase"] = "thinking_summary"
+                        if "choices" in synthetic_evt and synthetic_evt["choices"]:
+                            choice = dict(synthetic_evt["choices"][0])
+                            if "delta" in choice:
+                                delta = dict(choice["delta"])
+                                delta["phase"] = "thinking_summary"
+                                delta["content"] = ant_val
+                                choice["delta"] = delta
+                            synthetic_evt["choices"][0] = choice
+                        await on_delta(synthetic_evt, ant_val, None)
+                else:
+                    filtered_content = tool_result_filter.process_chunk(ant_val)
+                    if not filtered_content:
+                        continue
+                    answer_fragments.append(filtered_content)
 
-            # 毒性拒绝早期拦截：Qwen 偶尔幻觉出 "Tool X does not exists." 之类文本。
-            # 在标记 emitted_visible_output 之前识别并提前 finalize，让 evaluate_retry_directive
-            # 的 blocked_tool_name 分支能正常触发重试（否则 emitted=True 后就不 retry 了）。
-            if (
-                request.tools
-                and not emitted_visible_output
-                and len("".join(answer_fragments)) >= 20
-            ):
-                early_answer = "".join(answer_fragments).strip()
-                if _TOXIC_REFUSAL_RE.search(early_answer):
-                    toxic_blocked = extract_blocked_tool_names(early_answer, request.tool_names)
-                    blocked_name = toxic_blocked[0] if toxic_blocked else "unknown"
-                    log.warning(
-                        "[收集完成] 污染拦截 %r (未流出客户端，触发重试)",
-                        early_answer[:80],
-                    )
-                    return _finalize_result(reason=f"blocked_tool_name:{blocked_name}")
-
-            emitted_visible_output = True
-            if not first_event_marked:
-                metrics.mark("first_event", float(len(raw_events)))
-                first_event_marked = True
-
-            # Tool Sieve 实时检测
-            sieve_intercepted = False
-            if tool_sieve:
-                sieve_events = tool_sieve.process_chunk(filtered_content)
-                if getattr(tool_sieve, "capturing", False):
-                    sieve_intercepted = True
-                for sieve_evt in sieve_events:
-                    evt_type = sieve_evt.get("type")
-                    if evt_type == "tool_calls_start":
-                        sieve_intercepted = True
-                        calls = sieve_evt.get("calls", [])
-                        if on_delta is not None and calls:
-                            await on_delta(evt, None, calls)
-                        await _ensure_reasoning_closed()
-                    elif evt_type == "tool_calls_chunk":
-                        sieve_intercepted = True
-                        calls = sieve_evt.get("calls", [])
-                        if on_delta is not None and calls:
-                            await on_delta(evt, None, calls)
-                        # 如果 JSON 已经闭合（stream_completed），立刻尝试 return
-                        if getattr(tool_sieve, "stream_completed", False):
-                            # 尝试从 capture 中解析完整工具调用，立刻结束流
-                            flush_events = tool_sieve.flush()
-                            for fevt in flush_events:
-                                if fevt.get("type") == "tool_calls":
-                                    flush_calls = fevt.get("calls", [])
-                                    if flush_calls:
-                                        import uuid
-                                        detected_calls = [{
-                                            "type": "tool_use",
-                                            "id": getattr(tool_sieve, "stream_tool_id", f"toolu_{uuid.uuid4().hex[:8]}"),
-                                            "name": call["name"],
-                                            "input": call["input"]
-                                        } for call in flush_calls]
-                                        valid = [c for c in detected_calls if not request.tool_names or c["name"] in request.tool_names]
-                                        if valid:
-                                            native_tool_calls.extend(valid)
-                                            log.info("[Collect] ✓ ToolSieve JSON 闭合，提前 return: tools=%s", [c["name"] for c in valid])
-                                            return _finalize_result(reason="tool_sieve_stream_complete")
-                    elif evt_type == "tool_calls":
-                        sieve_intercepted = True
-                        # 检测到工具调用！
-                        calls = sieve_evt.get("calls", [])
-                        if calls:
-                            import uuid
-                            detected_calls = [{
-                                "type": "tool_use",
-                                "id": getattr(tool_sieve, "stream_tool_id", f"toolu_{uuid.uuid4().hex[:8]}"),
-                                "name": call["name"],
-                                "input": call["input"]
-                            } for call in calls]
-                            native_tool_calls.extend(detected_calls)
-                            log.info(
-                                "[Collect] ✓ Tool Sieve 实时检测到工具调用: tools=%s",
-                                [c.get("name") for c in detected_calls],
+                    # 毒性拒绝早期拦截：Qwen 偶尔幻觉出 "Tool X does not exists." 之类文本。
+                    # 在标记 emitted_visible_output 之前识别并提前 finalize，让 evaluate_retry_directive
+                    # 的 blocked_tool_name 分支能正常触发重试（否则 emitted=True 后就不 retry 了）。
+                    if (
+                        request.tools
+                        and not emitted_visible_output
+                        and len("".join(answer_fragments)) >= 20
+                    ):
+                        early_answer = "".join(answer_fragments).strip()
+                        if _TOXIC_REFUSAL_RE.search(early_answer):
+                            toxic_blocked = extract_blocked_tool_names(early_answer, request.tool_names)
+                            blocked_name = toxic_blocked[0] if toxic_blocked else "unknown"
+                            log.warning(
+                                "[收集完成] 污染拦截 %r (未流出客户端，触发重试)",
+                                early_answer[:80],
                             )
-                            # 如果没有流式输出过，才把整个块发给客户端；否则只触发执行结束
-                            # 且必须过滤掉未注册的非法工具（如 code_interpreter）
-                            valid_calls_to_emit = [c for c in detected_calls if not request.tool_names or c["name"] in request.tool_names]
-                            
-                            if on_delta is not None and not getattr(tool_sieve, "stream_tool_id", None):
-                                if valid_calls_to_emit:
-                                    await on_delta(evt, None, valid_calls_to_emit)
-                            await _ensure_reasoning_closed()
-                            return _finalize_result(reason="tool_sieve_detected")
-                    elif evt_type == "tool_detected":
-                        sieve_intercepted = True
-                        await _ensure_reasoning_closed()
+                            return _finalize_result(reason=f"blocked_tool_name:{blocked_name}")
 
-            if request.tools:
-                answer_text = "".join(answer_fragments)
-                if len(answer_fragments) % 3 == 0 or "does not exist" in content.lower():
-                    if "does not exist" in content.lower() and last_function_call and last_function_call.get("name"):
-                        qwen_name = last_function_call["name"]
-                        norm_name = from_qwen_name(qwen_name)
-                        # 如果已经在 native_tool_calls 中存在该工具调用，则忽略这次捡漏，避免重复
-                        if any(tc.get("name") == norm_name for tc in native_tool_calls):
-                            log.info("[Collect] 检测到抛尸现场工具 %s 已在 native_tool_calls 中，忽略捡漏", norm_name)
-                        else:
-                            import uuid
-                            try:
-                                args = json.loads(last_function_call.get("arguments", "{}"))
-                            except Exception:
-                                args = {"raw_args": last_function_call.get("arguments", "")}
-                            rescued_call = {
-                                "type": "tool_use",
-                                "id": f"toolu_{uuid.uuid4().hex[:8]}",
-                                "name": norm_name,
-                                "input": args
-                            }
-                            native_tool_calls.append(rescued_call)
-                            log.info(
-                                "[Collect] ✓ 成功在抛尸现场捡漏，拦截借尸还魂工具: %s",
-                                rescued_call["name"],
+                    emitted_visible_output = True
+                    if not first_event_marked:
+                        metrics.mark("first_event", float(len(raw_events)))
+                        first_event_marked = True
+
+                    # Tool Sieve 实时检测
+                    sieve_intercepted = False
+                    if tool_sieve:
+                        sieve_events = tool_sieve.process_chunk(filtered_content)
+                        if getattr(tool_sieve, "capturing", False):
+                            sieve_intercepted = True
+                        for sieve_evt in sieve_events:
+                            evt_type = sieve_evt.get("type")
+                            if evt_type == "tool_calls_start":
+                                sieve_intercepted = True
+                                calls = sieve_evt.get("calls", [])
+                                if on_delta is not None and calls:
+                                    await on_delta(evt, None, calls)
+                                await _ensure_reasoning_closed()
+                            elif evt_type == "tool_calls_chunk":
+                                sieve_intercepted = True
+                                calls = sieve_evt.get("calls", [])
+                                if on_delta is not None and calls:
+                                    await on_delta(evt, None, calls)
+                                # 如果 JSON 已经闭合（stream_completed），立刻尝试 return
+                                if getattr(tool_sieve, "stream_completed", False):
+                                    # 尝试从 capture 中解析完整工具调用，立刻结束流
+                                    flush_events = tool_sieve.flush()
+                                    for fevt in flush_events:
+                                        if fevt.get("type") == "tool_calls":
+                                            flush_calls = fevt.get("calls", [])
+                                            if flush_calls:
+                                                import uuid
+                                                detected_calls = [{
+                                                    "type": "tool_use",
+                                                    "id": getattr(tool_sieve, "stream_tool_id", f"toolu_{uuid.uuid4().hex[:8]}"),
+                                                    "name": call["name"],
+                                                    "input": call["input"]
+                                                } for call in flush_calls]
+                                                valid = [c for c in detected_calls if not request.tool_names or c["name"] in request.tool_names]
+                                                if valid:
+                                                    native_tool_calls.extend(valid)
+                                                    log.info("[Collect] ✓ ToolSieve JSON 闭合，提前 return: tools=%s", [c["name"] for c in valid])
+                                                    return _finalize_result(reason="tool_sieve_stream_complete")
+                            elif evt_type == "tool_calls":
+                                sieve_intercepted = True
+                                # 检测到工具调用！
+                                calls = sieve_evt.get("calls", [])
+                                if calls:
+                                    import uuid
+                                    detected_calls = [{
+                                        "type": "tool_use",
+                                        "id": getattr(tool_sieve, "stream_tool_id", f"toolu_{uuid.uuid4().hex[:8]}"),
+                                        "name": call["name"],
+                                        "input": call["input"]
+                                    } for call in calls]
+                                    native_tool_calls.extend(detected_calls)
+                                    log.info(
+                                        "[Collect] ✓ Tool Sieve 实时检测到工具调用: tools=%s",
+                                        [c.get("name") for c in detected_calls],
+                                    )
+                                    # 如果没有流式输出过，才把整个块发给客户端；否则只触发执行结束
+                                    # 且必须过滤掉未注册的非法工具（如 code_interpreter）
+                                    valid_calls_to_emit = [c for c in detected_calls if not request.tool_names or c["name"] in request.tool_names]
+                                    
+                                    if on_delta is not None and not getattr(tool_sieve, "stream_tool_id", None):
+                                        if valid_calls_to_emit:
+                                            await on_delta(evt, None, valid_calls_to_emit)
+                                    await _ensure_reasoning_closed()
+                                    return _finalize_result(reason="tool_sieve_detected")
+                            elif evt_type == "tool_detected":
+                                sieve_intercepted = True
+                                await _ensure_reasoning_closed()
+
+                    if request.tools:
+                        answer_text = "".join(answer_fragments)
+                        if len(answer_fragments) % 3 == 0 or "does not exist" in ant_val.lower():
+                            if "does not exist" in ant_val.lower() and last_function_call and last_function_call.get("name"):
+                                qwen_name = last_function_call["name"]
+                                norm_name = from_qwen_name(qwen_name)
+                                # 如果已经在 native_tool_calls 中存在该工具调用，则忽略这次捡漏，避免重复
+                                if any(tc.get("name") == norm_name for tc in native_tool_calls):
+                                    log.info("[Collect] 检测到抛尸现场工具 %s 已在 native_tool_calls 中，忽略捡漏", norm_name)
+                                else:
+                                    import uuid
+                                    try:
+                                        args = json.loads(last_function_call.get("arguments", "{}"))
+                                    except Exception:
+                                        args = {"raw_args": last_function_call.get("arguments", "")}
+                                    rescued_call = {
+                                        "type": "tool_use",
+                                        "id": f"toolu_{uuid.uuid4().hex[:8]}",
+                                        "name": norm_name,
+                                        "input": args
+                                    }
+                                    native_tool_calls.append(rescued_call)
+                                    log.info(
+                                        "[Collect] ✓ 成功在抛尸现场捡漏，拦截借尸还魂工具: %s",
+                                        rescued_call["name"],
+                                    )
+                                    if on_delta is not None:
+                                        await on_delta(evt, None, [rescued_call])
+                                        emitted_visible_output = True
+                                    await _ensure_reasoning_closed()
+                                    return _finalize_result(reason="native_tool_rescued")
+
+                            blocked_tool_names = extract_blocked_tool_names(answer_text.strip(), request.tool_names)
+                            if blocked_tool_names:
+                                return _finalize_result(reason=f"blocked_tool_name:{blocked_tool_names[0]}")
+
+                    if on_delta is not None and not sieve_intercepted:
+                        await on_delta(evt, filtered_content, None)
+
+                    if request.tools:
+                        if "##TOOL_CALL##" in answer_text or "<tool_call>" in answer_text or "<tool_code>" in answer_text:
+                            # 一旦检测到工具调用标记，立即关闭推理链，不等完整 JSON 解析完成
+                            await _ensure_reasoning_closed()
+                            directive = parse_tool_directive_once(
+                                request,
+                                RuntimeAttemptState(answer_text=answer_text, reasoning_text="".join(reasoning_fragments)),
                             )
-                            if on_delta is not None:
-                                await on_delta(evt, None, [rescued_call])
-                                emitted_visible_output = True
-                            await _ensure_reasoning_closed()
-                            return _finalize_result(reason="native_tool_rescued")
-
-                    blocked_tool_names = extract_blocked_tool_names(answer_text.strip(), request.tool_names)
-                    if blocked_tool_names:
-                        return _finalize_result(reason=f"blocked_tool_name:{blocked_tool_names[0]}")
-
-            if on_delta is not None and not sieve_intercepted:
-                await on_delta(evt, filtered_content, None)
-
-            if request.tools:
-                if "##TOOL_CALL##" in answer_text or "<tool_call>" in answer_text:
-                    # 一旦检测到工具调用标记，立即关闭推理链，不等完整 JSON 解析完成
-                    await _ensure_reasoning_closed()
-                    directive = parse_tool_directive_once(
-                        request,
-                        RuntimeAttemptState(answer_text=answer_text, reasoning_text="".join(reasoning_fragments)),
-                    )
-                    if directive.stop_reason == "tool_use":
-                        return _finalize_result(reason="textual_tool_use")
+                            if directive.stop_reason == "tool_use":
+                                return _finalize_result(reason="textual_tool_use")
             continue
 
         if phase == "tool_call":
@@ -934,6 +1053,30 @@ async def collect_completion_run(
                 if on_delta is not None:
                     await on_delta(evt, None, completed_calls)
                 return _finalize_result(reason="native_tool_use")
+
+    # 刷新 AntThinkingFilter 剩余内容
+    final_ant_events = ant_thinking_filter.flush()
+    for ant_type, ant_val in final_ant_events:
+        if ant_type == "thinking_summary":
+            reasoning_fragments.append(ant_val)
+            if on_delta is not None:
+                synthetic_evt = dict(last_event or {"phase": "answer"})
+                synthetic_evt["phase"] = "thinking_summary"
+                if "choices" in synthetic_evt and synthetic_evt["choices"]:
+                    choice = dict(synthetic_evt["choices"][0])
+                    if "delta" in choice:
+                        delta = dict(choice["delta"])
+                        delta["phase"] = "thinking_summary"
+                        delta["content"] = ant_val
+                        choice["delta"] = delta
+                    synthetic_evt["choices"][0] = choice
+                await on_delta(synthetic_evt, ant_val, None)
+        else:
+            filtered_content = tool_result_filter.process_chunk(ant_val)
+            if filtered_content:
+                answer_fragments.append(filtered_content)
+                if on_delta is not None:
+                    await on_delta(last_event or {"phase": "answer"}, filtered_content, None)
 
     # 刷新 ToolResultFilter 剩余内容
     final_flush = tool_result_filter.flush()

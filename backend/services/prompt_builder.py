@@ -142,16 +142,28 @@ def _build_tool_instruction_block(tools: list[dict], client_profile: str, native
         '- {"type": "tool_use", "name": "X"}  <-- NEVER USE',
         "- <function_calls><invoke name=\"X\">  <-- NEVER USE",
         "- <tool_call>{...}</tool_call>  <-- NEVER USE",
+        "- <tool_code>function_name(args)</tool_code>  <-- NEVER USE",
+        "- <antThinking>...</antThinking>  <-- NEVER USE",
         '- {"name":"X","input":{...}} without ##TOOL_CALL## markers  <-- NEVER USE',
         "- <｜Tool｜> or <｜tool｜> markers  <-- NEVER USE",
         "ONLY ##TOOL_CALL##...##END_CALL## is accepted.",
                 "=== END TOOL INSTRUCTIONS ===",
             ])
         else:
-            lines.append("Use the platform's native function calling capability to execute these actions.")
-            lines.append("")
-            lines.append("Available actions:")
-            lines.append("=== END TOOL INSTRUCTIONS ===")
+            lines.extend([
+                "Use the platform's native function calling capability to execute these actions.",
+                "",
+                "[STRICT RULES FOR TOOL CALLS & THINKING PROCESS]",
+                "- You MUST use the platform's native function calling format (JSON representation) to invoke tools. NEVER output raw XML-like tool code blocks (such as '<tool_code>...</tool_code>') or naked Python expressions directly in your text responses.",
+                "- You MUST output your thinking process or reasoning inside the platform's native thinking_summary block (via the summary_thought JSON format). NEVER output customized thinking tags like '<antThinking>...</antThinking>' or `<think>...</think>` directly in your text responses.",
+                "",
+                "【严格规则：工具调用与思维过程】",
+                "- 当需要调用工具时，你必须且只能使用平台的原生函数调用（Native Function Call）格式。严禁在回复中输出 '<tool_code>...</tool_code>' 自定义代码块或任何裸露的 Python 表达式。",
+                "- 你的所有思维过程和推理过程，必须且只能使用原生的 thinking_summary 机制（以 summary_thought 的 JSON 格式返回），严禁在正文回答中直接输出 '<antThinking>...</antThinking>' 或 '<think>...</think>' 等任何文本形式的思维链标签。",
+                "",
+                "Available actions:",
+                "=== END TOOL INSTRUCTIONS ==="
+            ])
         if len(names) <= 12:
             for tool in tools:
                 name = to_qwen_name(tool.get("name", ""))
