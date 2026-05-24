@@ -622,6 +622,7 @@ async def collect_completion_run(
                         import uuid
                         native_fn_id = f"toolu_{uuid.uuid4().hex[:8]}"
                         await on_delta(evt, None, [{"type": "tool_call_stream_start", "id": native_fn_id, "name": qwen_name}])
+                        emitted_visible_output = True
                         await _ensure_reasoning_closed()
                 
                 if native_fn_emitted and len(args_str) > last_fn_args_len:
@@ -655,6 +656,7 @@ async def collect_completion_run(
                                 
                             if args_delta:
                                 await on_delta(evt, None, [{"type": "tool_call_stream_chunk", "arguments": args_delta}])
+                                emitted_visible_output = True
                             
                             try:
                                 import json as _json
@@ -677,6 +679,7 @@ async def collect_completion_run(
                     last_fn_args_len = len(args_str)
                     if args_delta:
                         await on_delta(evt, None, [{"type": "tool_call_stream_chunk", "arguments": args_delta}])
+                        emitted_visible_output = True
             # --- END NATIVE FUNCTION_CALL STREAMING ---
 
         if phase in ("think", "thinking_summary"):
@@ -825,6 +828,7 @@ async def collect_completion_run(
                             )
                             if on_delta is not None:
                                 await on_delta(evt, None, [rescued_call])
+                                emitted_visible_output = True
                             await _ensure_reasoning_closed()
                             return _finalize_result(reason="native_tool_rescued")
 

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 API_KEYS_FILE = DATA_DIR / "api_keys.json"
 
