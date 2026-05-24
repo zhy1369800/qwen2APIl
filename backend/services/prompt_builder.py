@@ -533,7 +533,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
                 )
             elif not isinstance(tool_content, str):
                 tool_content = str(tool_content)
-            tool_result_limit = 6000 if (client_profile == CLAUDE_CODE_OPENAI_PROFILE and tools) else 300
+            tool_result_limit = 6000 if tools else 300
             if len(tool_content) > tool_result_limit:
                 tool_content = tool_content[:tool_result_limit] + "...[truncated]"
             line = f"[Tool Result]{(' id=' + tool_call_id) if tool_call_id else ''}\n{tool_content}\n[/Tool Result]"
@@ -574,11 +574,11 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
             or text.startswith("{")
             or "\"results\"" in text[:100]
         )
-        if client_profile == CLAUDE_CODE_OPENAI_PROFILE and tools:
+        if tools:
             if is_tool_result:
                 max_len = 6000
             elif role == "assistant":
-                max_len = 500
+                max_len = 500 if client_profile == CLAUDE_CODE_OPENAI_PROFILE else 1400
             else:
                 max_len = 1600
         else:
