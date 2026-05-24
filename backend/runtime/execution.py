@@ -604,6 +604,8 @@ async def collect_completion_run(
                 fc = last_function_call
                 name = fc.get("name")
                 args_str = fc.get("arguments", "")
+                if args_str:
+                    args_str = re.sub(r'\}\s*\n?</tool_cal[^>]*>', '}', args_str)
                 
                 if name and not native_fn_emitted and not native_fn_ignored:
                     qwen_name = from_qwen_name(name)
@@ -653,7 +655,8 @@ async def collect_completion_run(
                             }
                             native_tool_calls.append(completed_call)
                             native_fn_args_closed = True
-                            log.info("[Collect] ✓ 原生 function_call 参数闭合，继续收流: tool=%s", native_fn_name or qwen_name)
+                            log.info("[Collect] ✓ 原生 function_call 参数闭合，提前结束收流: tool=%s", native_fn_name or qwen_name)
+                            return _finalize_result(reason="native_fn_args_closed")
             # --- END NATIVE FUNCTION_CALL STREAMING ---
 
         if phase in ("think", "thinking_summary"):
@@ -778,26 +781,32 @@ async def collect_completion_run(
                 answer_text = "".join(answer_fragments)
                 if len(answer_fragments) % 3 == 0 or "does not exist" in content.lower():
                     if "does not exist" in content.lower() and last_function_call and last_function_call.get("name"):
-                        import uuid
-                        try:
-                            args = json.loads(last_function_call.get("arguments", "{}"))
-                        except Exception:
-                            args = {"raw_args": last_function_call.get("arguments", "")}
-                        rescued_call = {
-                            "type": "tool_use",
-                            "id": f"toolu_{uuid.uuid4().hex[:8]}",
-                            "name": from_qwen_name(last_function_call["name"]),
-                            "input": args
-                        }
-                        native_tool_calls.append(rescued_call)
-                        log.info(
-                            "[Collect] ✓ 成功在抛尸现场捡漏，拦截借尸还魂工具: %s",
-                            rescued_call["name"],
-                        )
-                        if on_delta is not None:
-                            await on_delta(evt, None, [rescued_call])
-                        await _ensure_reasoning_closed()
-                        return _finalize_result(reason="native_tool_rescued")
+                        qwen_name = last_function_call["name"]
+                        norm_name = from_qwen_name(qwen_name)
+                        # 如果已经在 native_tool_calls 中存在该工具调用，则忽略这次捡漏，避免重复
+                        if any(tc.get("name") == norm_name for tc in native_tool_calls):
+                            log.info("[Collect] 检测到抛尸现场工具 %s 已在 native_tool_calls 中，忽略捡漏", norm_name)
+                        else:
+                            import uuid
+                            try:
+                                args = json.loads(last_function_call.get("arguments", "{}"))
+                            except Exception:
+                                args = {"raw_args": last_function_call.get("arguments", "")}
+                            rescued_call = {
+                                "type": "tool_use",
+                                "id": f"toolu_{uuid.uuid4().hex[:8]}",
+                                "name": norm_name,
+                                "input": args
+                            }
+                            native_tool_calls.append(rescued_call)
+                            log.info(
+                                "[Collect] ✓ 成功在抛尸现场捡漏，拦截借尸还魂工具: %s",
+                                rescued_call["name"],
+                            )
+                            if on_delta is not None:
+                                await on_delta(evt, None, [rescued_call])
+                            await _ensure_reasoning_closed()
+                            return _finalize_result(reason="native_tool_rescued")
 
                     blocked_tool_names = extract_blocked_tool_names(answer_text.strip(), request.tool_names)
                     if blocked_tool_names:
