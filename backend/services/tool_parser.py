@@ -322,6 +322,32 @@ def parse_tool_calls_silent(answer: str, tools: list):
     return _parse_tool_calls(answer, tools, emit_logs=False)
 
 
+def parse_bracket_tool_call(text: str) -> dict | None:
+    m = re.search(r'\[Tool\s*Call:\s*([A-Za-z0-9_.-]+)\s*with\s*(.*?)\]', text, re.IGNORECASE)
+    if not m:
+        return None
+    name = m.group(1)
+    args_str = m.group(2)
+    
+    kv_pattern = r'([A-Za-z0-9_.-]+)\s*=\s*("[^"]*"|\'[^\']*\'|[^\s,]+)'
+    pairs = re.findall(kv_pattern, args_str)
+    
+    inputs = {}
+    for k, v in pairs:
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        else:
+            if v.isdigit():
+                v = int(v)
+            else:
+                try:
+                    v = float(v)
+                except ValueError:
+                    pass
+        inputs[k] = v
+    return {"name": name, "input": inputs, "start": m.start(), "end": m.end()}
+
+
 def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
     answer = _normalize_fragmented_tool_call(answer)
     ctx = get_request_context()
@@ -367,6 +393,15 @@ def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
         blocks.append({"type": "tool_use", "id": tool_id, "name": cased_name, "input": coerced_input})
         _log_info(f"[ToolParse] 返回工具块: original={name!r}, normalized={normalized_name!r}, final={cased_name!r}, input={json.dumps(coerced_input, ensure_ascii=False)[:200]}")
         return blocks, "tool_use"
+
+    bracket_call = parse_bracket_tool_call(answer)
+    if bracket_call:
+        name = bracket_call["name"]
+        inp = bracket_call["input"]
+        prefix = answer[:bracket_call["start"]].strip()
+        if emit_logs:
+            log.info(f"[ToolParse] [{req_tag}] ✓ Bracket格式 [Tool Call]: name={name!r}, input={str(inp)[:120]}")
+        return _make_tool_block(name, inp, prefix)
 
     detailed = parse_tool_calls_detailed(answer, tool_names)
     detailed_calls = cast(list[dict[str, Any]], detailed["calls"])
@@ -684,6 +719,8 @@ class ToolSieve:
             '<function=',
             '##TOOL_CALL##',
             'function.name:',
+            '[Tool Call:',
+            '[tool call:',
         ]
 
         positions = []
