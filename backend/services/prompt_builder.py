@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from backend.adapter.standard_request import CLAUDE_CODE_OPENAI_PROFILE, OPENCLAW_OPENAI_PROFILE
+from backend.core.config import settings
 from backend.core.request_logging import get_request_context
 from backend.services import file_content_cache
 from backend.services.client_profiles import (
@@ -533,7 +534,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
                 )
             elif not isinstance(tool_content, str):
                 tool_content = str(tool_content)
-            tool_result_limit = 6000 if tools else 300
+            tool_result_limit = settings.TOOL_RESULT_INLINE_MAX_CHARS if tools else settings.TOOL_RESULT_INLINE_NO_TOOLS_MAX_CHARS
             if len(tool_content) > tool_result_limit:
                 tool_content = tool_content[:tool_result_limit] + "...[truncated]"
             line = f"[Tool Result]{(' id=' + tool_call_id) if tool_call_id else ''}\n{tool_content}\n[/Tool Result]"
@@ -576,13 +577,13 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
         )
         if tools:
             if is_tool_result:
-                max_len = 6000
+                max_len = settings.TOOL_MESSAGE_INLINE_MAX_CHARS
             elif role == "assistant":
                 max_len = 500 if client_profile == CLAUDE_CODE_OPENAI_PROFILE else 1400
             else:
                 max_len = 1600
         else:
-            max_len = 600 if is_tool_result else 1400
+            max_len = settings.TOOL_RESULT_INLINE_NO_TOOLS_MAX_CHARS if is_tool_result else 1400
         if len(text) > max_len:
             text = text[:max_len] + "...[truncated]"
         is_tool_result_only_user_msg = role == "user" and not user_text_only.strip() and bool(text.strip())
