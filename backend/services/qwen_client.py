@@ -66,8 +66,8 @@ class QwenClient:
         )
         return {"status": resp.status_code, "body": resp.text}
 
-    async def create_chat(self, token: str, model: str, chat_type: str = "t2t") -> str:
-        return await self.executor.create_chat(token, model, chat_type=chat_type)
+    async def create_chat(self, token: str, model: str, chat_type: str = "t2t", *, use_prewarmed: bool = True) -> str:
+        return await self.executor.create_chat(token, model, chat_type=chat_type, use_prewarmed=use_prewarmed)
 
     async def delete_chat(self, token: str, chat_id: str):
         await self._request_json("DELETE", f"/api/v2/chats/{chat_id}", token, timeout=20.0)

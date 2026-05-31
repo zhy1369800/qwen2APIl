@@ -108,7 +108,7 @@ class ChatIdPool:
             if not token:
                 log.warning(f"[ChatIdPool] prewarm skipped email={email}: missing token")
                 return
-            chat_id = await self._client.executor.create_chat(token, model)
+            chat_id = await self._client.executor.create_chat(token, model, use_prewarmed=False)
             async with self._lock:
                 q = self._queues.setdefault(email, deque())
                 q.append(_Entry(chat_id))
@@ -162,6 +162,21 @@ class ChatIdPool:
             self._queues[email] = remaining
             if len(remaining) != len(q):
                 log.info(f"[ChatIdPool] invalidated email={email} chat_id={chat_id}")
+
+    async def contains(self, email: str, chat_id: str) -> bool:
+        if not email or not chat_id:
+            return False
+        async with self._lock:
+            return any(e.chat_id == chat_id for e in self._queues.get(email, []))
+
+    async def chat_ids(self, email: str | None = None) -> set[str]:
+        async with self._lock:
+            if email:
+                return {e.chat_id for e in self._queues.get(email, [])}
+            ids: set[str] = set()
+            for q in self._queues.values():
+                ids.update(e.chat_id for e in q)
+            return ids
 
     async def flush_account(self, email: str) -> int:
         """把某账号池里的所有 chat_id 清空。用于该账号命中空响应/5xx 后的保守处理，
