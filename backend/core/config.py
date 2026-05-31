@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     # ????? / ????
     CONTEXT_INLINE_MAX_CHARS: int = int(os.getenv("CONTEXT_INLINE_MAX_CHARS", 4000))
     CONTEXT_FORCE_FILE_MAX_CHARS: int = int(os.getenv("CONTEXT_FORCE_FILE_MAX_CHARS", 10000))
+    CONTEXT_ATTACH_WITH_TOOLS: bool = os.getenv("CONTEXT_ATTACH_WITH_TOOLS", "false").lower() in {"1", "true", "yes", "on"}
+    CONTEXT_INLINE_RECENT_MESSAGES: int = int(os.getenv("CONTEXT_INLINE_RECENT_MESSAGES", 6))
     CONTEXT_ATTACHMENT_TTL_SECONDS: int = int(os.getenv("CONTEXT_ATTACHMENT_TTL_SECONDS", 1800))
     CONTEXT_UPLOAD_PARSE_TIMEOUT_SECONDS: int = int(os.getenv("CONTEXT_UPLOAD_PARSE_TIMEOUT_SECONDS", 60))
     CONTEXT_GENERATED_DIR: str = os.getenv("CONTEXT_GENERATED_DIR", str(DATA_DIR / "context_files"))

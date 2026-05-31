@@ -37,8 +37,14 @@ async def prepare_context_attachments(*, app, payload: dict[str, Any], surface: 
     tools = payload.get("tools", []) or []
     messages = payload.get("messages", []) or []
     manual_attachments = list(existing_attachments or [])
-    plan = context_offloader.plan(messages, tools=tools, client_profile=client_profile)
-    use_generated_context_files = bool(plan.generated_files) and not bool(tools)
+    plan = context_offloader.plan(
+        messages,
+        tools=tools,
+        client_profile=client_profile,
+        keep_recent_messages=context_offloader.settings.CONTEXT_INLINE_RECENT_MESSAGES,
+    )
+    allow_generated_context_with_tools = not bool(tools) or bool(context_offloader.settings.CONTEXT_ATTACH_WITH_TOOLS)
+    use_generated_context_files = bool(plan.generated_files) and allow_generated_context_with_tools
     if not use_generated_context_files and not manual_attachments:
         return {
             "payload": payload,

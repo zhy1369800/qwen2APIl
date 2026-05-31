@@ -11,7 +11,8 @@ from backend.adapter.standard_request import CLAUDE_CODE_OPENAI_PROFILE
 SYSTEM_CONTEXT_FILE_PREFIX = "qwen2api_context"
 SYSTEM_CONTEXT_PROMPT_NOTE = (
     "System context files named qwen2api_context*.txt/.md/.json/.log may be attached. "
-    "Use them as supporting context. User-uploaded files are separate user inputs and should also be respected."
+    "Use them as supporting long-term context, while the inline messages remain authoritative for the latest turn and tool state. "
+    "User-uploaded files are separate user inputs and should also be respected."
 )
 
 
@@ -82,16 +83,33 @@ class ContextOffloader:
             sha256=hashlib.sha256(data).hexdigest(),
         )
 
-    def plan(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, client_profile: str = "") -> ContextOffloadPlan:
+    def plan(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        client_profile: str = "",
+        keep_recent_messages: int | None = None,
+    ) -> ContextOffloadPlan:
         estimated = self.estimate_prompt_len(messages, tools=tools, client_profile=client_profile)
         if estimated <= self.settings.CONTEXT_INLINE_MAX_CHARS:
             return ContextOffloadPlan(mode="inline", inline_messages=messages, estimated_prompt_len=estimated)
 
-        user_messages = [m for m in messages if m.get("role") == "user"]
-        latest_user = user_messages[-1] if user_messages else {"role": "user", "content": ""}
-        latest_user_text = self._extract_text(latest_user)
+        recent_count = self.settings.CONTEXT_INLINE_RECENT_MESSAGES if keep_recent_messages is None else keep_recent_messages
+        recent_count = max(1, int(recent_count or 1))
+        inline_messages = list(messages[-recent_count:]) if messages else []
+        older_messages = list(messages[:-recent_count]) if messages and len(messages) > recent_count else []
 
-        older_messages = messages[:-1] if messages else []
+        if not inline_messages:
+            inline_messages = [{"role": "user", "content": SYSTEM_CONTEXT_PROMPT_NOTE}]
+        else:
+            last_inline = dict(inline_messages[-1])
+            latest_text = self._extract_text(last_inline)
+            if latest_text.strip():
+                last_inline["content"] = f"{latest_text.strip()}\n\n{SYSTEM_CONTEXT_PROMPT_NOTE}"
+            else:
+                last_inline["content"] = SYSTEM_CONTEXT_PROMPT_NOTE
+            inline_messages[-1] = last_inline
+
         serialized_parts: list[str] = []
         for idx, msg in enumerate(older_messages, 1):
             role = msg.get("role", "unknown")
@@ -118,16 +136,9 @@ class ContextOffloader:
                 )
             )
 
-        rewritten_messages = [latest_user]
-        if latest_user_text.strip():
-            latest_user_rewrite = f"{latest_user_text.strip()}\n\n{SYSTEM_CONTEXT_PROMPT_NOTE}"
-        else:
-            latest_user_rewrite = SYSTEM_CONTEXT_PROMPT_NOTE
-        rewritten_messages = [{"role": "user", "content": latest_user_rewrite}]
-
         return ContextOffloadPlan(
             mode=mode,
-            inline_messages=rewritten_messages,
+            inline_messages=inline_messages,
             generated_files=generated_files,
             summary_text=summary_text,
             estimated_prompt_len=estimated,
