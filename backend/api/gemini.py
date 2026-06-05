@@ -51,6 +51,10 @@ async def _load_and_validate_request(request: Request, model: str, *, force_stre
     token = auth.token
 
     body = await request.json()
+    try:
+        log.info("[GEMINI] Client Request (Raw JSON):\n%s", json.dumps(body, ensure_ascii=False, indent=2))
+    except Exception:
+        log.info("[GEMINI] Client Request (Raw):\n%s", body)
     standard_request = _build_standard_request(model, body, stream=force_stream)
     update_request_context(resolved_model=standard_request.resolved_model)
     return users_db, client, token, standard_request

@@ -309,6 +309,10 @@ async def anthropic_messages(request: Request):
 
     try:
         req_data = await request.json()
+        try:
+            log.info("[ANT] Client Request (Raw JSON):\n%s", json.dumps(req_data, ensure_ascii=False, indent=2))
+        except Exception:
+            log.info("[ANT] Client Request (Raw):\n%s", req_data)
     except Exception:
         raise HTTPException(400, {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}})
 
