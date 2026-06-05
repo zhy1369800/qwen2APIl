@@ -63,7 +63,6 @@ def build_chat_standard_request(req_data: dict, *, default_model: str, surface: 
         tool_names=tool_names,
         tool_name_registry=build_tool_name_registry(tool_names),
         tool_enabled=prompt_result.tool_enabled,
-        system_prompt=prompt_result.system_prompt,
         chat_type=model_mode.chat_type,
         thinking_enabled=thinking_enabled,
         force_thinking=model_mode.force_thinking,
