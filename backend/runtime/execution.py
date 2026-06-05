@@ -638,6 +638,28 @@ def has_recent_openai_same_tool_call(history_messages: list[dict[str, Any]] | No
             parsed_args = {"raw": raw_args}
         return tool_identity(name, parsed_args) == target
     return False
+def _extract_reasoning_text(evt: dict[str, Any]) -> str:
+    if not isinstance(evt, dict):
+        return ""
+
+    content = evt.get("content", "")
+    if isinstance(content, str) and content:
+        return content
+
+    extra = evt.get("extra", {})
+    if not isinstance(extra, dict):
+        return ""
+
+    summary_thought = extra.get("summary_thought", {})
+    if not isinstance(summary_thought, dict):
+        return ""
+
+    summary_content = summary_thought.get("content", [])
+    if isinstance(summary_content, list):
+        return "".join(part for part in summary_content if isinstance(part, str))
+    if isinstance(summary_content, str):
+        return summary_content
+    return ""
 
 
 def has_invalid_textual_tool_contract(answer_text: str) -> bool:
@@ -1306,6 +1328,7 @@ async def collect_completion_run(
     first_event_marked = False
     raw_events: list[dict[str, Any]] = []
     metrics = StreamMetrics()
+    last_thinking_summary_text = ""
 
     # 鍒濆鍖?Tool Sieve 鐢ㄤ簬瀹炴椂妫€娴?
     tool_sieve = None
@@ -1524,6 +1547,7 @@ async def collect_completion_run(
         chat_type=request_chat_type,
         thinking_enabled=getattr(request, "thinking_enabled", None),
         enable_search=bool(getattr(request, "enable_search", False)),
+        system=getattr(request, "system_prompt", ""),
     ):
         if item.get("type") == "meta":
             chat_id = item.get("chat_id")
@@ -1553,14 +1577,25 @@ async def collect_completion_run(
         phase = evt.get("phase", "")
         content = evt.get("content", "")
 
-        if phase in ("think", "thinking_summary") and content:
-            reasoning_fragments.append(content)
-            emitted_visible_output = True
-            if not first_event_marked:
-                metrics.mark("first_event", float(len(raw_events)))
-                first_event_marked = True
+        if phase in ("think", "thinking_summary"):
+            reasoning_content = _extract_reasoning_text(evt)
+            if phase == "thinking_summary" and reasoning_content:
+                if reasoning_content.startswith(last_thinking_summary_text):
+                    incremental = reasoning_content[len(last_thinking_summary_text):]
+                else:
+                    incremental = reasoning_content
+                last_thinking_summary_text = reasoning_content
+                reasoning_content = incremental
+            if not reasoning_content and evt.get("status") != "finished":
+                continue
+            if reasoning_content:
+                reasoning_fragments.append(reasoning_content)
+                emitted_visible_output = True
+                if not first_event_marked:
+                    metrics.mark("first_event", float(len(raw_events)))
+                    first_event_marked = True
             if on_delta is not None:
-                await on_delta(evt, content, None)
+                await on_delta(evt, reasoning_content, None)
             continue
 
         if phase == "answer" and content:

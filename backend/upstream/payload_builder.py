@@ -87,6 +87,7 @@ def build_chat_payload(
     image_options: dict | None = None,
     thinking_enabled: bool | None = None,
     enable_search: bool = False,
+    system: str = "",
 ) -> dict:
     ts = int(time.time())
     is_image_gen = chat_type in IMAGE_CHAT_TYPES
@@ -162,6 +163,8 @@ def build_chat_payload(
         ],
         "timestamp": ts,
     }
+    if system:
+        payload["system"] = system
     if is_image_gen or is_video_gen:
         payload["size"] = _image_ratio(image_options)
     return payload

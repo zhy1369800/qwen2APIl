@@ -42,6 +42,7 @@ class PromptBuildResult:
     tools: list[dict]
     tool_enabled: bool
     workspace_root: str | None = None
+    system_prompt: str = ""
 
 
 def _is_heavy_tool_profile(client_profile: str) -> bool:
@@ -1120,4 +1121,5 @@ def messages_to_prompt(req_data: dict, *, client_profile: str = OPENCLAW_OPENAI_
         tools=tools,
         tool_enabled=tool_enabled,
         workspace_root=workspace_root,
+        system_prompt=system_prompt,
     )

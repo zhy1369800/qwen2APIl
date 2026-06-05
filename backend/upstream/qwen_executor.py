@@ -167,6 +167,7 @@ class QwenExecutor:
         image_options: dict | None = None,
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
+        system: str = "",
     ):
         stream_fn = getattr(self.engine, "stream_chat_once", None) or getattr(self.engine, "fetch_chat", None)
         if stream_fn is None:
@@ -182,6 +183,7 @@ class QwenExecutor:
             image_options=image_options,
             thinking_enabled=thinking_enabled,
             enable_search=enable_search,
+            system=system,
         )
         buffer = ""
         started_at = time.perf_counter()
@@ -300,6 +302,7 @@ class QwenExecutor:
         image_options: dict | None = None,
         thinking_enabled: bool | None = None,
         enable_search: bool = False,
+        system: str = "",
     ):
         exclude = set()
         last_error_message: str | None = None
@@ -332,6 +335,7 @@ class QwenExecutor:
                         image_options=image_options,
                         thinking_enabled=thinking_enabled,
                         enable_search=enable_search,
+                        system=system,
                     ):
                         yield {"type": "event", "event": evt}
                 finally:
@@ -378,6 +382,7 @@ class QwenExecutor:
                         image_options=image_options,
                         thinking_enabled=thinking_enabled,
                         enable_search=enable_search,
+                        system=system,
                     ):
                         yield {"type": "event", "event": evt}
                 finally:
