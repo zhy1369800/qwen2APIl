@@ -776,10 +776,10 @@ async def collect_completion_run(
                 
                 if name and not native_fn_emitted and not native_fn_ignored:
                     qwen_name = from_qwen_name(name)
-                    if request.tool_names and qwen_name not in request.tool_names:
+                    if not request.tool_names or qwen_name not in request.tool_names:
                         native_fn_ignored = True
                         native_fn_ignored_name = qwen_name
-                        log.warning(f"[Collect] 检测到未注册工具 {qwen_name!r}，立刻 return 触发重试，不等流结束")
+                        log.warning(f"[Collect] 检测到未注册工具 {qwen_name!r}，忽略以允许上游自执行，不等流结束")
                         # 立刻关推理 UI 并触发重试，避免等待 code_interpreter 跑完
                         await _ensure_reasoning_closed()
                         # return _finalize_result(reason=f"ignored_native_fn:{qwen_name}", explicit_blocked_tool=qwen_name)
