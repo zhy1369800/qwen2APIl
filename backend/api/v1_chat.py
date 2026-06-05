@@ -115,6 +115,23 @@ async def chat_completions(request: Request):
     created = int(time.time())
 
     with request_context(req_id=new_request_id(), surface="openai", requested_model=model_name, resolved_model=qwen_model):
+        try:
+            raw_request_dump = json.dumps(req_data, ensure_ascii=False, indent=2)
+        except Exception:
+            raw_request_dump = str(req_data)
+        log.info(
+            "[OAI] raw request model=%s stream=%s thinking=%r enable_thinking=%r thinking_budget=%r reasoning=%r include_reasoning=%r reasoning_effort=%r feature_config=%s\n%s",
+            req_data.get("model"),
+            req_data.get("stream"),
+            req_data.get("thinking"),
+            req_data.get("enable_thinking"),
+            req_data.get("thinking_budget"),
+            req_data.get("reasoning"),
+            req_data.get("include_reasoning"),
+            req_data.get("reasoning_effort"),
+            req_data.get("feature_config"),
+            raw_request_dump,
+        )
         log_test_prompt(
             log,
             surface="openai",
