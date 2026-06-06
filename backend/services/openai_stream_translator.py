@@ -370,9 +370,6 @@ class OpenAIStreamTranslator:
             return
         idx = self.emitted_tool_index - 1
         tool_delta: dict[str, Any] = {"index": idx, "function": {"arguments": arguments_chunk}}
-        if self.current_stream_tool_id:
-            tool_delta["id"] = self.current_stream_tool_id
-            tool_delta["type"] = "function"
         self.pending_chunks.append(
             f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'tool_calls': [tool_delta]}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
         )
