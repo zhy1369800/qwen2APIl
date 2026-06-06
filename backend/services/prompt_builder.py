@@ -468,7 +468,23 @@ def _safe_preview(text: str, limit: int = 240) -> str:
     if not text:
         return ""
     compact = " ".join(text.split())
-    return compact[:limit] + ("...[truncated]" if len(compact) > limit else "")
+    return compact[:limit] + ("...[ellipsis]" if len(compact) > limit else "")
+
+
+def _head_tail_truncate(text: str, max_len: int) -> str:
+    """对文本进行首尾保留截断。
+    当 text 长度超过 max_len 时，保留前部 75% 和后部 25% 的预算空间，
+    并在中间插入 \n...[ellipsis]...\n，从而兼顾头部结构和尾部状态。
+    """
+    if not text or len(text) <= max_len:
+        return text
+    placeholder = "\n...[ellipsis]...\n"
+    if max_len <= len(placeholder) + 10:
+        return text[:max_len]
+    available = max_len - len(placeholder)
+    head_len = int(available * 0.75)
+    tail_len = available - head_len
+    return f"{text[:head_len]}{placeholder}{text[-tail_len:]}"
 
 
 def _compact_tool_result_body(body: str, *, limit: int = 8000, head: int = 3000, tail: int = 1000) -> str:
@@ -478,7 +494,7 @@ def _compact_tool_result_body(body: str, *, limit: int = 8000, head: int = 3000,
     if not body or len(body) <= limit:
         return body
     dropped = len(body) - head - tail
-    return f"{body[:head]}\n...[truncated {dropped} bytes from middle]...\n{body[-tail:]}"
+    return f"{body[:head]}\n...[ellipsis {dropped} bytes from middle]...\n{body[-tail:]}"
 
 
 def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, client_profile: str = OPENCLAW_OPENAI_PROFILE, native_fc_enabled: bool = False, available_skills: str = "") -> str:
@@ -538,7 +554,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
                 tool_content = str(tool_content)
             tool_result_limit = settings.TOOL_RESULT_INLINE_MAX_CHARS if tools else settings.TOOL_RESULT_INLINE_NO_TOOLS_MAX_CHARS
             if len(tool_content) > tool_result_limit:
-                tool_content = tool_content[:tool_result_limit] + "...[truncated]"
+                tool_content = _head_tail_truncate(tool_content, tool_result_limit)
             line = f"[Tool Result]{(' id=' + tool_call_id) if tool_call_id else ''}\n{tool_content}\n[/Tool Result]"
             if used + len(line) + 2 > budget and history_parts:
                 break
@@ -594,7 +610,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
             (role == "assistant" and not first_assistant_seen)
         )
         if not is_exempt_from_truncation and len(text) > max_len:
-            text = text[:max_len] + "...[truncated]"
+            text = _head_tail_truncate(text, max_len)
         if role == "user":
             first_user_seen = True
         elif role == "assistant":
@@ -621,7 +637,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
         )
         if first_user:
             first_text = _extract_user_text_only(first_user.get("content", ""), client_profile=client_profile)
-            first_short = first_text[:800] + ("...[original task truncated]" if len(first_text) > 800 else "")
+            first_short = first_text[:800] + ("...[original task ellipsis]" if len(first_text) > 800 else "")
             first_line = f"Human (ORIGINAL TASK): {first_short}" if client_profile == CLAUDE_CODE_OPENAI_PROFILE else f"Human: {first_short}"
             if not history_parts or not history_parts[0].startswith(f"Human: {first_text[:60]}") and not history_parts[0].startswith(f"Human (ORIGINAL TASK): {first_text[:60]}"):
                 first_line_cost = len(first_line) + 2
@@ -647,7 +663,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
         if latest_user:
             latest_text = _extract_user_text_only(latest_user.get("content", ""), client_profile=client_profile).strip()
             if latest_text:
-                latest_short = latest_text[:900] + ("...[latest task truncated]" if len(latest_text) > 900 else "")
+                latest_short = latest_text[:900] + ("...[latest task ellipsis]" if len(latest_text) > 900 else "")
                 latest_user_line = f"Human (CURRENT TASK - TOP PRIORITY): {latest_short}"
 
 
