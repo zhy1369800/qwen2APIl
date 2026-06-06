@@ -533,6 +533,16 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
     max_history_msgs = (30 if client_profile == CLAUDE_CODE_OPENAI_PROFILE else 8) if tools else 200
     first_user_seen = False
     first_assistant_seen = False
+    latest_user = None
+    if tools and messages:
+        latest_user = next(
+            (
+                m for m in reversed(messages)
+                if m.get("role") == "user"
+                and _extract_user_text_only(m.get("content", ""), client_profile=client_profile).strip()
+            ),
+            None,
+        )
     for msg in reversed(messages):
         if msg_count >= max_history_msgs:
             break
@@ -616,7 +626,13 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
         elif role == "assistant":
             first_assistant_seen = True
         is_tool_result_only_user_msg = role == "user" and not user_text_only.strip() and bool(text.strip())
-        prefix = "" if is_tool_result_only_user_msg else {"user": "Human: ", "assistant": "Assistant: ", "system": "System: "}.get(role, "")
+        if is_tool_result_only_user_msg:
+            prefix = ""
+        else:
+            if role == "user" and msg is latest_user and tools and client_profile == CLAUDE_CODE_OPENAI_PROFILE:
+                prefix = "Human (CURRENT TASK - TOP PRIORITY): "
+            else:
+                prefix = {"user": "Human: ", "assistant": "Assistant: ", "system": "System: "}.get(role, "")
         line = text if is_tool_result_only_user_msg else f"{prefix}{text}"
         if used + len(line) + 2 > budget and history_parts:
             break
@@ -650,21 +666,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
                     log.info(f"[Prompt] 恢复原始任务上下文 ({len(first_short)} chars)")
 
 
-    latest_user_line = ""
-    if tools and messages:
-        latest_user = next(
-            (
-                m for m in reversed(messages)
-                if m.get("role") == "user"
-                and _extract_user_text_only(m.get("content", ""), client_profile=client_profile).strip()
-            ),
-            None,
-        )
-        if latest_user:
-            latest_text = _extract_user_text_only(latest_user.get("content", ""), client_profile=client_profile).strip()
-            if latest_text:
-                latest_short = latest_text[:900] + ("...[latest task ellipsis]" if len(latest_text) > 900 else "")
-                latest_user_line = f"Human (CURRENT TASK - TOP PRIORITY): {latest_short}"
+    # 取消在尾部重新组装和强插 latest_user_line 的逻辑，已移至历史对话的正序前缀中。
 
 
     if tools and log.isEnabledFor(logging.DEBUG):
@@ -727,14 +729,30 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
     # 真实对话历史 —— 排在 few-shot 之后紧邻 Assistant:
     parts.extend(history_parts)
 
-    if latest_user_line:
-        parts.append(latest_user_line)
-
-    # 状态感知催促：用户要求"读+写"但模型只完成了读就停下来的场景，
-    # 在 Assistant: 前注入强制指令迫使下一步输出 Write/Edit 工具调用。
+    # 状态感知催促：用户要求"读+写"但模型只完成了读就停下来的场景
     state_notice = _build_state_followup_notice(messages, tools, client_profile, native_fc_enabled=native_fc_enabled)
     if state_notice:
         parts.append(state_notice)
+
+    # 状态感知催促二：如果最新一条消息是工具结果，在 Assistant: 前注入完成度自检状态提示
+    last_msg = messages[-1] if messages else None
+    last_role = last_msg.get("role", "") if last_msg else ""
+    last_content = _extract_text(last_msg.get("content", ""), client_profile=client_profile).lower() if last_msg else ""
+    last_is_tool_result = last_role == "tool" or (
+        last_role == "user" and (
+            "[tool result" in last_content or
+            last_content.startswith("{") or
+            "\"results\"" in last_content[:100]
+        )
+    )
+    if tools and last_is_tool_result:
+        sufficiency_notice = (
+            "[STATE NOTICE]\n"
+            "Please determine if the historical info and tool results are sufficient to complete the CURRENT TASK.\n"
+            "- If YES: Output your final response to the user (e.g. generate the click link, summary, or confirmation). DO NOT call any tools.\n"
+            "- If NO: Proceed to call the next necessary tool to continue the task."
+        )
+        parts.append(sufficiency_notice)
 
     parts.append("Assistant:")
     return "\n\n".join(parts)
