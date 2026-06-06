@@ -285,7 +285,61 @@ TOOL_MESSAGE_INLINE_MAX_CHARS=8000
 TOOL_MESSAGE_INLINE_MAX_CHARS=6000
 ```
 
-## 三、推荐配置组合
+## 三、对话历史消息截断长度配置
+
+为避免长任务或携带大参数的工具消息在历史对话中被过早截断损坏，系统提供了以下环境变量来灵活控制各角色消息的历史保留截断上限：
+
+### `ASSISTANT_MESSAGE_CLAUDE_INLINE_MAX_CHARS`
+
+默认值：
+
+```env
+ASSISTANT_MESSAGE_CLAUDE_INLINE_MAX_CHARS=500
+```
+
+用途：
+
+在 `tools` 启用且使用 Claude 兼容模式（`CLAUDE_CODE_OPENAI_PROFILE`）时，限制非工具调用的普通助手回复最大保留字符数。
+
+### `ASSISTANT_MESSAGE_INLINE_MAX_CHARS`
+
+默认值：
+
+```env
+ASSISTANT_MESSAGE_INLINE_MAX_CHARS=1400
+```
+
+用途：
+
+在普通或非 Claude 兼容模式下，限制非工具调用的普通助手回复的最大保留字符数。在未启用 `tools` 的普通对话中也生效。
+
+### `USER_MESSAGE_INLINE_MAX_CHARS`
+
+默认值：
+
+```env
+USER_MESSAGE_INLINE_MAX_CHARS=1600
+```
+
+用途：
+
+在 `tools` 启用时，限制用户普通输入（非工具结果）的最大保留字符数。
+
+### `TOOL_CALL_INLINE_MAX_CHARS`
+
+默认值：
+
+```env
+TOOL_CALL_INLINE_MAX_CHARS=8000
+```
+
+用途：
+
+专门用于保护助手回复中包含 `##TOOL_CALL##` 的工具调用（例如写入文件等携带大量参数的消息）。设置该上限为较大的值（例如 8000 字符以上）可以有效防止工具调用参数被截断损坏，避免 JSON 结构破碎以及由此引发的重复工具调用。
+
+---
+
+## 四、推荐配置组合
 
 ### 保守稳定版
 

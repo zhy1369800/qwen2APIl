@@ -515,6 +515,8 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
                            "[需求回显]", "**需求回显**")
     msg_count = 0
     max_history_msgs = (30 if client_profile == CLAUDE_CODE_OPENAI_PROFILE else 8) if tools else 200
+    first_user_seen = False
+    first_assistant_seen = False
     for msg in reversed(messages):
         if msg_count >= max_history_msgs:
             break
@@ -579,13 +581,24 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
             if is_tool_result:
                 max_len = settings.TOOL_MESSAGE_INLINE_MAX_CHARS
             elif role == "assistant":
-                max_len = 500 if client_profile == CLAUDE_CODE_OPENAI_PROFILE else 1400
+                if "##TOOL_CALL##" in text:
+                    max_len = settings.TOOL_CALL_INLINE_MAX_CHARS
+                else:
+                    max_len = settings.ASSISTANT_MESSAGE_CLAUDE_INLINE_MAX_CHARS if client_profile == CLAUDE_CODE_OPENAI_PROFILE else settings.ASSISTANT_MESSAGE_INLINE_MAX_CHARS
             else:
-                max_len = 1600
+                max_len = settings.USER_MESSAGE_INLINE_MAX_CHARS
         else:
-            max_len = settings.TOOL_RESULT_INLINE_NO_TOOLS_MAX_CHARS if is_tool_result else 1400
-        if len(text) > max_len:
+            max_len = settings.TOOL_RESULT_INLINE_NO_TOOLS_MAX_CHARS if is_tool_result else settings.ASSISTANT_MESSAGE_INLINE_MAX_CHARS
+        is_exempt_from_truncation = (
+            (role == "user" and not first_user_seen) or
+            (role == "assistant" and not first_assistant_seen)
+        )
+        if not is_exempt_from_truncation and len(text) > max_len:
             text = text[:max_len] + "...[truncated]"
+        if role == "user":
+            first_user_seen = True
+        elif role == "assistant":
+            first_assistant_seen = True
         is_tool_result_only_user_msg = role == "user" and not user_text_only.strip() and bool(text.strip())
         prefix = "" if is_tool_result_only_user_msg else {"user": "Human: ", "assistant": "Assistant: ", "system": "System: "}.get(role, "")
         line = text if is_tool_result_only_user_msg else f"{prefix}{text}"
