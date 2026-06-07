@@ -348,6 +348,34 @@ def parse_bracket_tool_call(text: str) -> dict | None:
     return {"name": name, "input": inputs, "start": m.start(), "end": m.end()}
 
 
+def parse_new_bracket_tool_call(text: str) -> dict | None:
+    m = re.search(r'\[Tool\s*Call\]\s*([A-Za-z0-9_.-]+)\s*\n*(\{.*)', text, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    json_part = m.group(2).strip()
+    
+    depth = 0
+    json_end = -1
+    for idx, ch in enumerate(json_part):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                json_end = idx
+                break
+    if json_end != -1:
+        json_str = json_part[:json_end + 1]
+        try:
+            inputs = json.loads(json_str)
+            if isinstance(inputs, dict):
+                return {"name": name, "input": inputs, "start": m.start(), "end": m.start() + len(text) - len(json_part) + json_end + 1}
+        except Exception:
+            pass
+    return None
+
+
 def parse_xml_tool_code(text: str) -> dict | None:
     m = re.search(r'<tool_code>\s*(.*?)\s*</tool_code>', text, re.DOTALL | re.IGNORECASE)
     if not m:
@@ -444,6 +472,15 @@ def _parse_tool_calls(answer: str, tools: list, *, emit_logs: bool):
         prefix = answer[:bracket_call["start"]].strip()
         if emit_logs:
             log.info(f"[ToolParse] [{req_tag}] ✓ Bracket格式 [Tool Call]: name={name!r}, input={str(inp)[:120]}")
+        return _make_tool_block(name, inp, prefix)
+
+    new_bracket_call = parse_new_bracket_tool_call(answer)
+    if new_bracket_call:
+        name = new_bracket_call["name"]
+        inp = new_bracket_call["input"]
+        prefix = answer[:new_bracket_call["start"]].strip()
+        if emit_logs:
+            log.info(f"[ToolParse] [{req_tag}] ✓ 新Bracket格式 [Tool Call] name\\n{{...}}: name={name!r}, input={str(inp)[:120]}")
         return _make_tool_block(name, inp, prefix)
 
     xml_tool_code = parse_xml_tool_code(answer)
@@ -605,6 +642,7 @@ class ToolSieve:
                 xml_invoke_name = None
                 xml_function_name = None
                 xml_tool_code_name = None
+                bracket_tool_name = None
                 if not m_name:
                     m_invoke = re.search(r"<invoke\s+name=\"([^\"]+)\"", self.capture, re.IGNORECASE)
                     if m_invoke:
@@ -617,10 +655,14 @@ class ToolSieve:
                             m_tool_code = re.search(r"<tool_code>\s*([A-Za-z0-9_.-]+)", self.capture, re.IGNORECASE)
                             if m_tool_code:
                                 xml_tool_code_name = m_tool_code.group(1)
+                            else:
+                                m_bracket = re.search(r'\[Tool\s*Call\]\s*([A-Za-z0-9_.-]+)', self.capture, re.IGNORECASE)
+                                if m_bracket:
+                                    bracket_tool_name = m_bracket.group(1)
                 if m_name:
                     raw_name = m_name.group(1)
-                elif xml_invoke_name or xml_function_name or xml_tool_code_name:
-                    raw_name = xml_invoke_name or xml_function_name or xml_tool_code_name
+                elif xml_invoke_name or xml_function_name or xml_tool_code_name or bracket_tool_name:
+                    raw_name = xml_invoke_name or xml_function_name or xml_tool_code_name or bracket_tool_name
                 else:
                     raw_name = None
                     
@@ -647,10 +689,23 @@ class ToolSieve:
 
             # 2. 定位并提取 arguments 的开始
             if getattr(self, "stream_active", False) and not getattr(self, "args_started", False):
-                m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
-                if m_input:
-                    self.args_started = True
-                    args_start_str = m_input.group(1)
+                is_bracket_layout = "[tool call]" in self.capture.lower()
+                if is_bracket_layout:
+                    brace_pos = self.capture.find("{")
+                    if brace_pos != -1:
+                        self.args_started = True
+                        args_start_str = self.capture[brace_pos:]
+                    else:
+                        args_start_str = ""
+                else:
+                    m_input = re.search(r'"(?:input|arguments|args)"\s*:\s*(.*)', self.capture, re.DOTALL)
+                    if m_input:
+                        self.args_started = True
+                        args_start_str = m_input.group(1)
+                    else:
+                        args_start_str = ""
+
+                if getattr(self, "args_started", False) and args_start_str:
                     cleaned_start = args_start_str.lstrip()
                     if cleaned_start.startswith('"'):
                         self.args_is_quoted_string = True
@@ -781,6 +836,8 @@ class ToolSieve:
             'function.name:',
             '[Tool Call:',
             '[tool call:',
+            '[Tool Call]',
+            '[tool call]',
         ]
 
         positions = []

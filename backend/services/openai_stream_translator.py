@@ -84,6 +84,7 @@ class OpenAIStreamTranslator:
         lowered = text_chunk.lower()
         common_markers = (
             "[tool call]",
+            "[tool call",
             "tool does not exists",
             "function.name:",
             "##tool_call##",
@@ -319,7 +320,8 @@ class OpenAIStreamTranslator:
                 buffered_probe = self.prefix_probe_buffer
                 self.prefix_probe_buffer = ""
                 self.prefix_probe_decided = True
-                if buffered_probe.lstrip().startswith(TOOL_CALL_PREFIX_PROBE):
+                probe_clean = buffered_probe.lstrip().lower()
+                if probe_clean.startswith("##tool_call") or probe_clean.startswith("[tool call"):
                     self.buffered_toolish_fragments.append(buffered_probe)
                     return
                 text_chunk = buffered_probe
