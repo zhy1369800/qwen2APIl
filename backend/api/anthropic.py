@@ -144,7 +144,10 @@ class _AnthropicStreamState:
         if not text_chunk:
             return
         index = self.open_textual_block("text")
-        self.answer_text_buffer.append((index, text_chunk))
+        self.pending_chunks.append(
+            stream_presenter.anthropic_content_block_delta(index, {"type": "text_delta", "text": text_chunk})
+        )
+        self.flushed_answer_text += text_chunk
 
     def append_tool_delta(self, *, tool_call_id: str, tool_name: str, partial_json: str) -> None:
         index = self.open_tool_block(tool_call_id, tool_name)
