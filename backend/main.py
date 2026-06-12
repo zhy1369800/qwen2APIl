@@ -100,6 +100,11 @@ app.include_router(files_api.router, tags=["Files"])
 app.include_router(probes.router, tags=["Probes"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Dashboard Admin"])
 
+# 显式添加 healthz 接口以支持 Render 健康检查
+@app.get("/healthz", tags=["System"])
+async def health_check():
+    return {"status": "ok"}
+
 @app.get("/api", tags=["System"])
 async def root():
     return {
@@ -117,4 +122,6 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=settings.PORT, workers=1)
+    # 优先使用环境变量 PORT，适配 Render 等云平台
+    port = int(os.Getenv("PORT", settings.PORT))
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=port, workers=1)
