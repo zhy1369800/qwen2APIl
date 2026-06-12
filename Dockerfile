@@ -67,6 +67,7 @@ RUN mkdir -p /workspace/data /workspace/logs /workspace/frontend
 
 EXPOSE 7860
 
+# 优化健康检查路径为 /healthz (在 main.py 中已显式添加)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -fsS "http://127.0.0.1:${PORT:-7860}/healthz" || exit 1
 
