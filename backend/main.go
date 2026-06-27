@@ -1771,6 +1771,7 @@ type Settings struct {
 	Port                                   int
 	Workers                                int
 	AdminKey                               string
+	EngineMode                             string
 	BrowserPoolSize                        int
 	MaxInflightPerAccount                  int
 	BrowserStreamTimeoutSeconds            int
@@ -1832,6 +1833,7 @@ func LoadSettings() Settings {
 		Port:                                   envInt("PORT", 7860),
 		Workers:                                envInt("WORKERS", 1),
 		AdminKey:                               envString("ADMIN_KEY", ""),
+		EngineMode:                             strings.ToLower(envString("ENGINE_MODE", "http")),
 		BrowserPoolSize:                        envInt("BROWSER_POOL_SIZE", 1),
 		MaxInflightPerAccount:                  envIntAlias("MAX_INFLIGHT_PER_ACCOUNT", "MAX_INFLIGHT", 2),
 		BrowserStreamTimeoutSeconds:            envInt("BROWSER_STREAM_TIMEOUT_SECONDS", 1800),
@@ -7985,7 +7987,7 @@ func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token str
 		Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
 		Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
 	`
-	if err := bCtx.AddInitScript(pw.BrowserContextAddInitScriptOptions{Script: pw.String(antiDetectScript)}); err != nil {
+	if err := bCtx.AddInitScript(pw.Script{Content: pw.String(antiDetectScript)}); err != nil {
 		logWarn(c.logger, ctx, "注入防检测脚本提示", "error", err)
 	}
 
