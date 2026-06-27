@@ -1,23 +1,20 @@
 name: Docker Build and Push
 
 on:
-  push:
-    branches: [ "main" ]
-    tags: [ "v*.*.*" ]
   workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: write
+  push:
+    branches: [ "main", "my-branch" ]
+    tags: [ "v*.*.*" ]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  GHCR_IMAGE: ghcr.io/yujunzhixue/qwen2api
-  DOCKERHUB_IMAGE: yujunzhixue/qwen2api
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout
@@ -29,36 +26,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Resolve image targets
-        id: targets
-        shell: bash
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          dockerhub_enabled=false
-          images="${GHCR_IMAGE}"
-
-          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
-            dockerhub_enabled=true
-            images="${images}"$'\n'"${DOCKERHUB_IMAGE}"
-          fi
-
-          {
-            echo "dockerhub_enabled=${dockerhub_enabled}"
-            echo "images<<EOF"
-            printf '%s\n' "${images}"
-            echo "EOF"
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Log in to Docker Hub
-        if: steps.targets.outputs.dockerhub_enabled == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -69,7 +37,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.targets.outputs.images }}
+          images: ghcr.io/${{ github.repository_owner }}/qwen2api
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
