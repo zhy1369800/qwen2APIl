@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG GO_VERSION=1.22
+ARG GO_VERSION=1.26
 ARG NODE_VERSION=20
 
 # Stage 1: 构建前端 WebUI 产物
