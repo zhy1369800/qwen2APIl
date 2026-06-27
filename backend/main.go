@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -7890,6 +7891,8 @@ func NewQwenClient(pool *AccountPool, settings Settings, logger *slog.Logger) *Q
 	}
 }
 
+var globalCookies sync.Map
+
 func qwenHeaders(token string) http.Header {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+token)
@@ -7906,6 +7909,11 @@ func qwenHeaders(token string) http.Header {
 	h.Set("sec-fetch-dest", "empty")
 	h.Set("sec-fetch-mode", "cors")
 	h.Set("sec-fetch-site", "same-origin")
+	if cookieVal, ok := globalCookies.Load(token); ok {
+		if cStr, isStr := cookieVal.(string); isStr && cStr != "" {
+			h.Set("Cookie", cStr)
+		}
+	}
 	return h
 }
 
@@ -7923,7 +7931,115 @@ func qwenRequestID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+func isWafOrValidateError(status int, body string) bool {
+	lower := strings.ToLower(body)
+	return status == 403 || strings.Contains(lower, "fail_sys_user_validate") || strings.Contains(lower, "rgv587_error") || strings.Contains(lower, "punish?x5secdata=")
+}
+
+func (c *QwenClient) runDrissionSolver(ctx context.Context, token string) bool {
+	cmd := exec.CommandContext(ctx, "python", "backend/drission_solver.py", token)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	var res struct {
+		Success bool   `json:"success"`
+		Cookie  string `json:"cookie"`
+	}
+	if json.Unmarshal(out, &res) == nil && res.Success && res.Cookie != "" {
+		globalCookies.Store(token, res.Cookie)
+		logInfo(c.logger, ctx, "成功通过外部 DrissionPage 引擎捕获并更新风控 Cookie (x5sec)", "token", redactToken(token))
+		return true
+	}
+	return false
+}
+
+func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token string, body any) (int, string, error) {
+	if c.runDrissionSolver(ctx, token) {
+		logInfo(c.logger, ctx, "DrissionPage 已成功更新 Cookie，重试 HTTP 请求", "path", path)
+	}
+	logInfo(c.logger, ctx, "启动 Playwright 浏览器引擎代理请求/风控破解", "method", method, "path", path, "token", redactToken(token))
+	if err := installPlaywrightBrowsers(c.logger); err != nil {
+		return 0, "", err
+	}
+	pwInst, err := pw.Run()
+	if err != nil {
+		return 0, "", err
+	}
+	defer pwInst.Stop()
+	browser, err := pwInst.Chromium.Launch(pw.BrowserTypeLaunchOptions{Headless: pw.Bool(true)})
+	if err != nil {
+		return 0, "", err
+	}
+	defer browser.Close()
+	bCtx, err := browser.NewContext()
+	if err != nil {
+		return 0, "", err
+	}
+	defer bCtx.Close()
+
+	// 注入 Anti-Detection 防检测脚本，抹去 navigator.webdriver 与 CDP 痕迹 (对齐 DrissionPage 的防伪能力)
+	antiDetectScript := `
+		Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+		window.navigator.chrome = { runtime: {} };
+		Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+		Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+	`
+	if err := bCtx.AddInitScript(pw.BrowserContextAddInitScriptOptions{Script: pw.String(antiDetectScript)}); err != nil {
+		logWarn(c.logger, ctx, "注入防检测脚本提示", "error", err)
+	}
+
+	page, err := bCtx.NewPage()
+	if err != nil {
+		return 0, "", err
+	}
+	if _, err := page.Goto(qwenBaseURL, pw.PageGotoOptions{WaitUntil: pw.WaitUntilStateDomcontentloaded}); err != nil {
+		logWarn(c.logger, ctx, "Playwright 页面加载提示", "error", err)
+	}
+	url := qwenBaseURL + path
+	jsCode := `async ([url, method, token, body]) => {
+		try {
+			const headers = {
+				'Authorization': 'Bearer ' + token,
+				'Content-Type': 'application/json',
+				'Accept': 'application/json, text/plain, */*'
+			};
+			const opts = { method, headers };
+			if (body) opts.body = JSON.stringify(body);
+			const resp = await fetch(url, opts);
+			const text = await resp.text();
+			return { status: resp.status, body: text };
+		} catch (e) {
+			return { status: 0, body: String(e) };
+		}
+	}`
+	res, err := page.Evaluate(jsCode, []any{url, method, token, body})
+	if err != nil {
+		return 0, "", err
+	}
+	resMap, _ := res.(map[string]any)
+	statusFloat, _ := resMap["status"].(float64)
+	status := int(statusFloat)
+	bodyStr, _ := resMap["body"].(string)
+
+	// 捕获更新 x5sec 等风控 Cookie
+	cookies, err := bCtx.Cookies()
+	if err == nil && len(cookies) > 0 {
+		var cStrs []string
+		for _, ck := range cookies {
+			cStrs = append(cStrs, fmt.Sprintf("%s=%s", ck.Name, ck.Value))
+		}
+		cookieHeader := strings.Join(cStrs, "; ")
+		globalCookies.Store(token, cookieHeader)
+		logInfo(c.logger, ctx, "成功从 Playwright 捕获并更新风控 Cookie (x5sec)", "token", redactToken(token))
+	}
+	return status, bodyStr, nil
+}
+
 func (c *QwenClient) requestJSON(ctx context.Context, method, path, token string, body any, timeout time.Duration) (int, string, error) {
+	if strings.ToLower(c.settings.EngineMode) == "browser" {
+		return c.requestBrowser(ctx, method, path, token, body)
+	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -7955,14 +8071,26 @@ func (c *QwenClient) requestJSON(ctx context.Context, method, path, token string
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
-	attrs := []any{"method", method, "path", path, "token", redactToken(token), "upstream_request_id", upstreamRequestID, "status", resp.StatusCode, "bytes", len(raw), "duration_ms", time.Since(start).Milliseconds()}
-	if resp.StatusCode >= 400 {
-		attrs = append(attrs, "body", truncate(string(raw), 240))
+	status := resp.StatusCode
+	bodyText := string(raw)
+
+	// 遭遇风控拦截或处于 hybrid 模式降级
+	if isWafOrValidateError(status, bodyText) {
+		logWarn(c.logger, ctx, "检测到 Qwen 风控拦截 (RGV587/x5sec)，自动降级触发 Playwright 浏览器代理更新 Cookie", "status", status, "token", redactToken(token))
+		bStatus, bBody, bErr := c.requestBrowser(ctx, method, path, token, body)
+		if bErr == nil && bStatus > 0 {
+			return bStatus, bBody, nil
+		}
+	}
+
+	attrs := []any{"method", method, "path", path, "token", redactToken(token), "upstream_request_id", upstreamRequestID, "status", status, "bytes", len(raw), "duration_ms", time.Since(start).Milliseconds()}
+	if status >= 400 {
+		attrs = append(attrs, "body", truncate(bodyText, 240))
 		logWarn(c.logger, ctx, "上游请求完成", attrs...)
 	} else {
 		logInfo(c.logger, ctx, "上游请求完成", attrs...)
 	}
-	return resp.StatusCode, string(raw), nil
+	return status, bodyText, nil
 }
 
 func (c *QwenClient) CreateChat(ctx context.Context, token, model, chatType string) (string, error) {
