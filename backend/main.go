@@ -7966,6 +7966,24 @@ func (c *QwenClient) runDrissionSolver(ctx context.Context, token, verifyURL str
 	return false
 }
 
+func toInt(v any) int {
+	switch val := v.(type) {
+	case int:
+		return val
+	case int64:
+		return int(val)
+	case float64:
+		return int(val)
+	case float32:
+		return int(val)
+	case string:
+		i, _ := strconv.Atoi(val)
+		return i
+	default:
+		return 0
+	}
+}
+
 func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token string, body any, verifyURL string) (int, string, error) {
 	if c.runDrissionSolver(ctx, token, verifyURL) {
 		logInfo(c.logger, ctx, "DrissionPage 已成功更新 Cookie，重试 HTTP 请求", "path", path)
@@ -8035,13 +8053,20 @@ func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token str
 		logWarn(c.logger, ctx, "Playwright 页面加载提示", "error", err)
 	}
 	url := qwenBaseURL + path
-	jsCode := `async ([url, method, token, body]) => {
+
+	headersMap := map[string]string{}
+	for k, vs := range qwenHeaders(token) {
+		if len(vs) > 0 {
+			headersMap[k] = vs[0]
+		}
+	}
+	if body != nil {
+		headersMap["Content-Type"] = "application/json"
+	}
+
+	jsCode := `async ([url, method, customHeaders, body]) => {
 		try {
-			const headers = {
-				'Authorization': 'Bearer ' + token,
-				'Content-Type': 'application/json',
-				'Accept': 'application/json, text/plain, */*'
-			};
+			const headers = customHeaders || {};
 			const opts = { method, headers };
 			if (body) opts.body = JSON.stringify(body);
 			const resp = await fetch(url, opts);
@@ -8051,13 +8076,12 @@ func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token str
 			return { status: 0, body: String(e) };
 		}
 	}`
-	res, err := page.Evaluate(jsCode, []any{url, method, token, body})
+	res, err := page.Evaluate(jsCode, []any{url, method, headersMap, body})
 	if err != nil {
 		return 0, "", err
 	}
 	resMap, _ := res.(map[string]any)
-	statusFloat, _ := resMap["status"].(float64)
-	status := int(statusFloat)
+	status := toInt(resMap["status"])
 	bodyStr, _ := resMap["body"].(string)
 
 	// 捕获更新 x5sec 等风控 Cookie
