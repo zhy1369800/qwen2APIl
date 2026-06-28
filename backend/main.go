@@ -7933,13 +7933,23 @@ func qwenRequestID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-func isWafOrValidateError(status int, body string) bool {
-	lower := strings.ToLower(body)
-	return status == 403 || strings.Contains(lower, "fail_sys_user_validate") || strings.Contains(lower, "rgv587_error") || strings.Contains(lower, "punish?x5secdata=")
+var punishURLRegex = regexp.MustCompile(`https?://[^\s"'<>,)]+punish\?x5secdata=[^\s"'<>,)]+`)
+
+func extractVerifyURL(body string) string {
+	return punishURLRegex.FindString(body)
 }
 
-func (c *QwenClient) runDrissionSolver(ctx context.Context, token string) bool {
-	cmd := exec.CommandContext(ctx, "python", "backend/drission_solver.py", token)
+func isWafOrValidateError(status int, body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "fail_sys_user_validate") || strings.Contains(lower, "rgv587_error") || strings.Contains(lower, "punish?x5secdata=")
+}
+
+func (c *QwenClient) runDrissionSolver(ctx context.Context, token, verifyURL string) bool {
+	args := []string{"backend/drission_solver.py", token}
+	if verifyURL != "" {
+		args = append(args, verifyURL)
+	}
+	cmd := exec.CommandContext(ctx, "python", args...)
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -7956,9 +7966,31 @@ func (c *QwenClient) runDrissionSolver(ctx context.Context, token string) bool {
 	return false
 }
 
-func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token string, body any) (int, string, error) {
-	if c.runDrissionSolver(ctx, token) {
+func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token string, body any, verifyURL string) (int, string, error) {
+	if c.runDrissionSolver(ctx, token, verifyURL) {
 		logInfo(c.logger, ctx, "DrissionPage 已成功更新 Cookie，重试 HTTP 请求", "path", path)
+		var reader io.Reader
+		if body != nil {
+			raw, _ := json.Marshal(body)
+			reader = bytes.NewReader(raw)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, qwenBaseURL+path, reader)
+		if err == nil {
+			req.Header = qwenHeaders(token)
+			if body != nil {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			resp, err := c.http.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				raw, _ := io.ReadAll(resp.Body)
+				status := resp.StatusCode
+				bodyStr := string(raw)
+				if status < 400 || !isWafOrValidateError(status, bodyStr) {
+					return status, bodyStr, nil
+				}
+			}
+		}
 	}
 	logInfo(c.logger, ctx, "启动 Playwright 浏览器引擎代理请求/风控破解", "method", method, "path", path, "token", redactToken(token))
 	if err := installPlaywrightBrowsers(c.logger); err != nil {
@@ -7995,7 +8027,11 @@ func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token str
 	if err != nil {
 		return 0, "", err
 	}
-	if _, err := page.Goto(qwenBaseURL, pw.PageGotoOptions{WaitUntil: pw.WaitUntilStateDomcontentloaded}); err != nil {
+	targetGoto := qwenBaseURL
+	if verifyURL != "" {
+		targetGoto = verifyURL
+	}
+	if _, err := page.Goto(targetGoto, pw.PageGotoOptions{WaitUntil: pw.WaitUntilStateDomcontentloaded}); err != nil {
 		logWarn(c.logger, ctx, "Playwright 页面加载提示", "error", err)
 	}
 	url := qwenBaseURL + path
@@ -8040,7 +8076,7 @@ func (c *QwenClient) requestBrowser(ctx context.Context, method, path, token str
 
 func (c *QwenClient) requestJSON(ctx context.Context, method, path, token string, body any, timeout time.Duration) (int, string, error) {
 	if strings.ToLower(c.settings.EngineMode) == "browser" {
-		return c.requestBrowser(ctx, method, path, token, body)
+		return c.requestBrowser(ctx, method, path, token, body, "")
 	}
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -8078,8 +8114,9 @@ func (c *QwenClient) requestJSON(ctx context.Context, method, path, token string
 
 	// 遭遇风控拦截或处于 hybrid 模式降级
 	if isWafOrValidateError(status, bodyText) {
-		logWarn(c.logger, ctx, "检测到 Qwen 风控拦截 (RGV587/x5sec)，自动降级触发 Playwright 浏览器代理更新 Cookie", "status", status, "token", redactToken(token))
-		bStatus, bBody, bErr := c.requestBrowser(ctx, method, path, token, body)
+		verifyURL := extractVerifyURL(bodyText)
+		logWarn(c.logger, ctx, "检测到 Qwen 风控拦截 (RGV587/x5sec)，自动降级触发浏览器代理更新 Cookie", "status", status, "token", redactToken(token), "verify_url", verifyURL)
+		bStatus, bBody, bErr := c.requestBrowser(ctx, method, path, token, body, verifyURL)
 		if bErr == nil && bStatus > 0 {
 			return bStatus, bBody, nil
 		}
